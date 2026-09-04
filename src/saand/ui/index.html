@@ -1,0 +1,944 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saand Efectos</title>
+<style>
+  :root {
+    --bg:#0e0f13; --panel:#16181f; --raise:#1c1f28; --line:#272b36; --text:#e6e8ef;
+    --dim:#8b91a3; --faint:#5d6474; --accent:#ffd666; --sfx:#6ea8fe; --music:#7ee0a8;
+    --amb:#c79bf0; --speech:#39404f; --danger:#ff7a7a; --ok:#7ee0a8;
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  a { color:var(--accent); }
+  button,select,input,textarea { font:inherit; color:var(--text); background:var(--raise);
+    border:1px solid var(--line); border-radius:7px; padding:7px 11px; }
+  button { cursor:pointer; transition:border-color .12s, background .12s; }
+  button:hover:not(:disabled) { border-color:var(--faint); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.primary { background:var(--accent); color:#191400; border-color:var(--accent); font-weight:650; }
+  button.primary:hover:not(:disabled) { filter:brightness(1.08); }
+  button.ghost { background:transparent; }
+  button.sm { padding:4px 9px; font-size:12px; }
+  .danger { color:var(--danger); }
+  .spacer { flex:1; }
+  .row { display:flex; align-items:center; gap:10px; }
+  .wrap { flex-wrap:wrap; }
+  .muted { color:var(--dim); }
+  .tiny { font-size:12px; }
+  .mono { font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; }
+
+  header { display:flex; align-items:center; gap:14px; padding:12px 20px;
+    border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:20; }
+  .brand { font-size:15px; font-weight:650; letter-spacing:.2px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); display:inline-block; }
+
+  .view { padding:22px; max-width:1500px; margin:0 auto; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px; }
+  .panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.09em;
+    color:var(--dim); margin:0 0 12px; font-weight:650; }
+
+  /* Import */
+  .drop { border:2px dashed var(--line); border-radius:12px; padding:38px 20px; text-align:center;
+    transition:border-color .15s, background .15s; cursor:pointer; }
+  .drop.over { border-color:var(--accent); background:#ffd6660d; }
+  .drop h3 { margin:0 0 6px; font-size:16px; font-weight:600; }
+
+  /* Library */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px;
+    cursor:pointer; transition:border-color .12s, transform .12s; }
+  .card:hover { border-color:var(--faint); transform:translateY(-1px); }
+  .card h3 { margin:0 0 4px; font-size:14px; font-weight:600; word-break:break-all; }
+  .badge { font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; padding:2.5px 7px;
+    border-radius:20px; border:1px solid var(--line); color:var(--dim); font-weight:600; }
+  .badge.rendered { color:var(--ok); border-color:#7ee0a855; }
+  .badge.designed { color:var(--sfx); border-color:#6ea8fe55; }
+  .badge.analysed { color:var(--amb); border-color:#c79bf055; }
+  .badge.busy { color:var(--accent); border-color:#ffd66655; }
+
+  /* Steps */
+  .steps { display:flex; gap:6px; margin-bottom:16px; flex-wrap:wrap; }
+  .step { flex:1; min-width:130px; border:1px solid var(--line); border-radius:9px; padding:10px 12px;
+    background:var(--panel); position:relative; }
+  .step.done { border-color:#7ee0a840; }
+  .step.now { border-color:var(--accent); }
+  .step .n { font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint); font-weight:650; }
+  .step.done .n { color:var(--ok); }
+  .step.now .n { color:var(--accent); }
+  .step .t { font-size:13px; margin-top:2px; }
+
+  main.editor { display:grid; grid-template-columns:minmax(400px,1fr) minmax(430px,1.05fr);
+    gap:18px; align-items:start; }
+  @media (max-width:1020px) { main.editor { grid-template-columns:1fr; } }
+  .sticky { position:sticky; top:66px; }
+  video { width:100%; border-radius:8px; background:#000; display:block; }
+
+  /* Timeline */
+  .timeline { position:relative; height:76px; margin-top:12px; border:1px solid var(--line);
+    border-radius:7px; background:#101219; overflow:hidden; cursor:pointer; }
+  .tl-speech { position:absolute; top:0; height:100%; background:var(--speech); opacity:.6; }
+  .tl-shot { position:absolute; top:0; height:100%; border-left:1px solid #39405240; }
+  .tl-bed { position:absolute; height:12px; border-radius:3px; opacity:.85; }
+  .tl-cue { position:absolute; width:2px; height:26px; bottom:7px; background:var(--sfx); }
+  .tl-cue::after { content:''; position:absolute; top:-4px; left:-3px; width:8px; height:8px;
+    border-radius:50%; background:var(--sfx); }
+  .tl-play { position:absolute; top:0; width:1.5px; height:100%; background:var(--accent); pointer-events:none; }
+  .legend { display:flex; gap:14px; font-size:11px; color:var(--dim); margin-top:8px; flex-wrap:wrap; }
+  .sw { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+
+  /* Cues */
+  .ghead { display:flex; align-items:center; gap:8px; margin:16px 0 8px; }
+  .ghead h3 { font-size:11px; margin:0; color:var(--dim); text-transform:uppercase; letter-spacing:.09em; }
+  .cue { border:1px solid var(--line); border-radius:9px; padding:11px; margin-bottom:9px; background:#12141b; }
+  .cue.bad { border-color:var(--danger); background:#ff7a7a08; }
+  .cue-top { display:flex; align-items:center; gap:7px; margin-bottom:8px; }
+  .cue-id { font-family:ui-monospace,monospace; font-size:12px; color:var(--accent); min-width:58px; }
+  .cue textarea { width:100%; resize:vertical; min-height:46px; font-size:13px; }
+  .fields { display:flex; gap:8px; margin-top:9px; flex-wrap:wrap; }
+  .field { display:flex; flex-direction:column; gap:3px; }
+  .field label { font-size:10px; color:var(--faint); text-transform:uppercase; letter-spacing:.06em; }
+  .field input,.field select { padding:4px 7px; font-size:12px; }
+  .field input[type=number] { width:80px; }
+  .note { font-size:11px; color:var(--faint); margin-top:6px; font-style:italic; }
+
+  /* Log + banners */
+  .log { background:#0a0b0f; border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+    max-height:190px; overflow:auto; font-family:ui-monospace,monospace; font-size:12px;
+    color:var(--dim); white-space:pre-wrap; }
+  .banner { border-radius:9px; padding:11px 14px; margin-bottom:14px; font-size:13px;
+    border:1px solid var(--line); background:var(--panel); }
+  .banner.warn { border-color:#ffd66640; background:#ffd6660d; }
+  .banner.err { border-color:#ff7a7a40; background:#ff7a7a0d; color:#ffc9c9; }
+  .banner.ok { border-color:#7ee0a840; background:#7ee0a80d; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--line);
+    border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; vertical-align:-2px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .hidden { display:none !important; }
+  dialog { background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:12px; padding:20px; max-width:560px; }
+  dialog::backdrop { background:#000a; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot"></span>
+  <span class="brand">Saand Efectos</span>
+  <span id="crumb" class="muted tiny"></span>
+  <div class="spacer"></div>
+  <span id="hstatus" class="tiny muted"></span>
+  <button class="ghost sm" id="btnLicences">Licences</button>
+  <button class="ghost sm hidden" id="btnBack">&larr; All projects</button>
+</header>
+
+<!-- ============================ LIBRARY ============================ -->
+<div class="view" id="viewLibrary">
+  <div id="engineBanner"></div>
+
+  <div class="panel" style="margin-bottom:18px">
+    <h2>New project</h2>
+    <div class="drop" id="drop">
+      <h3>Drop a video here</h3>
+      <div class="muted tiny">or click to choose &mdash; mp4, mov, mkv, webm, avi</div>
+      <input type="file" id="file" accept="video/*" class="hidden">
+    </div>
+    <div class="row wrap" style="margin-top:12px">
+      <input id="pathInput" placeholder="…or paste a full path to a file already on disk"
+             style="flex:1; min-width:260px">
+      <button id="btnPath">Use that file</button>
+    </div>
+    <div class="tiny muted" style="margin-top:7px">
+      Pasting a path avoids copying a large video through the browser &mdash; it is read where it sits.
+    </div>
+    <div id="importStatus" class="tiny" style="margin-top:9px"></div>
+  </div>
+
+  <div class="row" style="margin-bottom:10px">
+    <h2 style="margin:0; font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--dim)">Projects</h2>
+    <span id="projectCount" class="tiny muted"></span>
+  </div>
+  <div class="grid" id="projects"></div>
+  <p class="muted tiny" id="emptyLib" style="display:none">Nothing yet. Add a video above to start.</p>
+</div>
+
+<!-- ============================ EDITOR ============================ -->
+<div class="view hidden" id="viewProject">
+  <div id="projBanner"></div>
+  <div class="steps" id="steps"></div>
+
+  <main class="editor">
+    <section>
+      <div class="panel sticky">
+        <div class="row" style="margin-bottom:10px">
+          <h2 style="margin:0">Preview</h2>
+          <div class="spacer"></div>
+          <label class="tiny muted" id="abWrap"><input type="checkbox" id="ab" style="vertical-align:-2px"> original</label>
+        </div>
+        <video id="player" controls preload="metadata"></video>
+        <div class="timeline" id="timeline"><div class="tl-play" id="playhead"></div></div>
+        <div class="legend">
+          <span><i class="sw" style="background:var(--music)"></i>music</span>
+          <span><i class="sw" style="background:var(--amb)"></i>ambience</span>
+          <span><i class="sw" style="background:var(--sfx)"></i>effect</span>
+          <span><i class="sw" style="background:var(--speech)"></i>speech</span>
+        </div>
+
+        <div class="fields" style="margin-top:15px">
+          <div class="field"><label>preset</label><select id="preset"></select></div>
+          <div class="field"><label>target LUFS</label><input type="number" id="lufs" step="0.5" min="-40" max="-5"></div>
+          <div class="field"><label>keep original audio</label>
+            <select id="keepOriginal"><option value="true">yes</option><option value="false">no</option></select></div>
+        </div>
+        <div id="presetHint" class="tiny muted" style="margin-top:9px"></div>
+
+        <div class="row wrap" style="margin-top:16px; gap:8px">
+          <button class="primary" id="btnAct"></button>
+          <button class="ghost" id="btnSave">Save</button>
+          <label class="tiny muted" id="previewWrap"><input type="checkbox" id="previewMode" style="vertical-align:-2px"> preview (placeholder audio)</label>
+        </div>
+
+        <div id="jobBox" class="hidden" style="margin-top:14px">
+          <div class="row tiny muted" style="margin-bottom:6px">
+            <span class="spin" id="jobSpin"></span><span id="jobLabel"></span>
+            <div class="spacer"></div><span id="jobTime" class="mono"></span>
+          </div>
+          <div class="log" id="jobLog"></div>
+        </div>
+
+        <div class="row wrap" style="margin-top:14px; gap:8px" id="downloads"></div>
+
+        <details style="margin-top:14px">
+          <summary class="tiny muted" style="cursor:pointer">Contact sheets</summary>
+          <div id="contact"></div>
+        </details>
+      </div>
+    </section>
+
+    <section>
+      <div class="panel">
+        <div class="row" style="margin-bottom:6px">
+          <h2 style="margin:0">Cues</h2>
+          <span id="cueCount" class="tiny muted"></span>
+        </div>
+        <div id="cues"></div>
+        <div class="ghead" style="margin-top:16px">
+          <button class="ghost sm" data-add="sfx">+ effect</button>
+          <button class="ghost sm" data-add="music">+ music bed</button>
+          <button class="ghost sm" data-add="ambience">+ ambience</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="licenceDlg">
+  <h3 style="margin:0 0 12px">Engine licences</h3>
+  <div id="licenceBody"></div>
+  <div class="row" style="margin-top:16px"><div class="spacer"></div>
+    <button onclick="document.getElementById('licenceDlg').close()">Close</button></div>
+</dialog>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+let lib = null;        // /api/library payload
+let proj = null;       // current project payload
+let dirty = false;
+let poll = null;
+const badCues = new Set();   // cue ids the server rejected
+const STAGES = ['imported', 'analysed', 'designed', 'rendered'];
+
+const say = (msg, cls = '') => { const e = $('#hstatus'); e.textContent = msg; e.className = 'tiny ' + (cls || 'muted'); };
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, opts);
+  const isJson = (res.headers.get('content-type') || '').includes('json');
+  const body = isJson ? await res.json() : await res.text();
+  if (!res.ok) throw new Error((body && body.detail) || res.statusText);
+  return body;
+}
+
+/* ============================== LIBRARY ============================== */
+
+async function loadLibrary() {
+  lib = await api('/api/library');
+  const host = $('#projects');
+  host.innerHTML = '';
+  $('#projectCount').textContent = lib.projects.length ? `${lib.projects.length}` : '';
+  $('#emptyLib').style.display = lib.projects.length ? 'none' : 'block';
+
+  for (const p of lib.projects) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const badge = p.busy ? 'busy' : p.stage;
+    const label = p.busy ? (p.job ? p.job.kind + 'ing…' : 'working…') : p.stage;
+    const meta = [];
+    if (p.duration) meta.push(fmt(p.duration));
+    if (p.width) meta.push(`${p.width}×${p.height}`);
+    if (p.shots) meta.push(`${p.shots} shots`);
+    if (p.cue_count) meta.push(`${p.cue_count} cues`);
+
+    card.innerHTML = `
+      <div class="row" style="align-items:flex-start">
+        <h3>${p.name}</h3><div class="spacer"></div>
+        <span class="badge ${badge}">${label}</span>
+      </div>
+      <div class="tiny muted">${meta.join(' · ') || 'not analysed yet'}</div>
+      ${p.missing_source ? '<div class="tiny danger" style="margin-top:5px">source file missing</div>' : ''}
+      <div class="row" style="margin-top:11px">
+        <div class="spacer"></div>
+        <button class="ghost sm danger" data-del="${p.name}">Delete</button>
+      </div>`;
+    card.onclick = e => { if (!e.target.dataset.del) openProject(p.name); };
+    $('[data-del]', card).onclick = async e => {
+      e.stopPropagation();
+      if (!confirm(`Delete project "${p.name}" and everything in it?`)) return;
+      try { await api(`/api/project/${p.name}`, { method: 'DELETE' }); await loadLibrary(); }
+      catch (err) { say(err.message, 'danger'); }
+    };
+    host.append(card);
+  }
+  renderEngineBanner();
+}
+
+function renderEngineBanner() {
+  const av = lib.engine_available || {};
+  const auth = lib.engine_auth || {};
+  const host = $('#engineBanner');
+
+  if (!av['stable-audio-3-medium']) {
+    host.innerHTML = `<div class="banner warn">
+      <strong>Stable Audio 3 is not installed yet</strong> &mdash; the engine that generates real
+      sound. You can still import, analyse, design cues, and render in
+      <em>preview</em> mode (placeholder audio) to check timing and mixing.
+      <div class="tiny muted" style="margin-top:6px">Ask Claude to install it, or see README.md.</div>
+    </div>`;
+    return;
+  }
+
+  // Installed but not authorised: the weights are gated, and only the account holder can
+  // accept the licence. Say exactly what is missing rather than letting a render fail.
+  if (auth.needed && auth.authorised === false) {
+    host.innerHTML = `<div class="banner warn">
+      <strong>One step left: authorise the model weights</strong>
+      <div style="margin-top:7px">Stable Audio 3 is installed, but its weights are gated and
+      this machine ${auth.logged_in ? 'has not been granted access' : 'is not signed in to Hugging Face'}.</div>
+      <ol style="margin:8px 0 0 18px; padding:0">
+        <li>Accept the licence (free, instant) at
+          <a href="https://huggingface.co/${auth.repo}" target="_blank" rel="noopener">huggingface.co/${auth.repo}</a></li>
+        <li>Run <span class="mono">uv run hf auth login</span> in a terminal, then reload this page</li>
+      </ol>
+      <div class="tiny muted" style="margin-top:7px">Until then, tick <em>preview</em> before
+      rendering to hear timing and mixing with placeholder audio.</div>
+    </div>`;
+    return;
+  }
+  host.innerHTML = '';
+}
+
+/* Import */
+const drop = $('#drop');
+drop.onclick = () => $('#file').click();
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('over');
+  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+});
+$('#file').onchange = e => { if (e.target.files[0]) upload(e.target.files[0]); };
+
+async function upload(file) {
+  const st = $('#importStatus');
+  st.className = 'tiny muted';
+  st.textContent = `uploading ${file.name} (${(file.size / 1048576).toFixed(1)} MB)…`;
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const { name } = await api('/api/import/upload', { method: 'POST', body: form });
+    st.textContent = '';
+    await loadLibrary();
+    openProject(name);
+  } catch (err) { st.className = 'tiny danger'; st.textContent = err.message; }
+}
+
+$('#btnPath').onclick = async () => {
+  const path = $('#pathInput').value.trim();
+  if (!path) return;
+  const st = $('#importStatus');
+  st.className = 'tiny muted'; st.textContent = 'linking…';
+  try {
+    const { name } = await api('/api/import/path', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    st.textContent = ''; $('#pathInput').value = '';
+    await loadLibrary(); openProject(name);
+  } catch (err) { st.className = 'tiny danger'; st.textContent = err.message; }
+};
+$('#pathInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnPath').click(); });
+
+/* ============================== EDITOR ============================== */
+
+function showLibrary() {
+  stopPoll();
+  proj = null; dirty = false;
+  $('#viewLibrary').classList.remove('hidden');
+  $('#viewProject').classList.add('hidden');
+  $('#btnBack').classList.add('hidden');
+  $('#crumb').textContent = '';
+  say('');
+  loadLibrary();
+}
+$('#btnBack').onclick = () => {
+  if (dirty && !confirm('You have unsaved cue changes. Leave anyway?')) return;
+  showLibrary();
+};
+
+async function openProject(name) {
+  proj = await api(`/api/project/${name}`);
+  dirty = false;
+  $('#viewLibrary').classList.add('hidden');
+  $('#viewProject').classList.remove('hidden');
+  $('#btnBack').classList.remove('hidden');
+  $('#crumb').textContent = proj.name;
+  paintProject();
+  if (proj.job && ['queued', 'running'].includes(proj.job.status)) startPoll(proj.job.id);
+}
+
+async function refresh() {
+  if (!proj) return;
+  const keep = $('#player').currentTime;
+  proj = await api(`/api/project/${proj.name}`);
+  paintProject();
+  if (keep) $('#player').currentTime = keep;
+}
+
+function paintProject() {
+  paintSteps();
+  paintBanner();
+  paintPlayer();
+  paintSettings();
+  paintCues();
+  paintTimeline();
+  paintDownloads();
+  paintAction();
+
+  $('#contact').innerHTML = (proj.contact_sheets || [])
+    .map(n => `<img src="/media/${proj.name}/contact/${n}" alt="${n}"
+                style="width:100%;border-radius:6px;margin-top:8px;display:block">`).join('')
+    || '<p class="tiny muted">none yet</p>';
+}
+
+function paintSteps() {
+  const at = STAGES.indexOf(proj.stage);
+  const shots = (proj.shots || []).length;
+  const labels = [
+    ['Import', proj.source_name || '—'],
+    ['Analyse', shots ? `${shots} shots` : 'find shots & speech'],
+    ['Design cues', proj.cue_count ? `${proj.cue_count} cues` : 'what to hear, and when'],
+    ['Render', proj.stage === 'rendered' ? 'done' : 'generate & mix'],
+  ];
+  $('#steps').innerHTML = labels.map(([t, sub], i) => `
+    <div class="step ${i <= at ? 'done' : ''} ${i === at + 1 ? 'now' : ''}">
+      <div class="n">${i + 1}. ${t}</div><div class="t muted tiny">${sub}</div>
+    </div>`).join('');
+}
+
+function paintBanner() {
+  const host = $('#projBanner');
+  const auth = lib.engine_auth || {};
+  if (auth.needed && auth.authorised === false && !proj.missing_source) {
+    host.innerHTML = `<div class="banner warn">
+      <strong>Model weights not authorised</strong> &mdash; a normal render will fail.
+      Tick <em>preview</em> to hear timing now, or
+      <a href="https://huggingface.co/${auth.repo}" target="_blank" rel="noopener">accept the licence</a>
+      and run <span class="mono">uv run hf auth login</span>.
+    </div>`;
+    return;
+  }
+  if (proj.missing_source) {
+    host.innerHTML = `<div class="banner err">The source video is missing or has been moved.</div>`;
+    return;
+  }
+  const rec = proj.provenance || [];
+  const noncommercial = rec.filter(r => r.commercial_use === false);
+  if (noncommercial.length) {
+    host.innerHTML = `<div class="banner err"><strong>This render contains non-commercial audio.</strong>
+      It cannot be monetized or used in client work.</div>`;
+    return;
+  }
+  host.innerHTML = '';
+}
+
+function paintPlayer() {
+  const wantOriginal = $('#ab').checked;
+  const src = (proj.stage === 'rendered' && !wantOriginal)
+    ? `/media/${proj.name}/video` : `/media/${proj.name}/source`;
+  const player = $('#player');
+  const full = src + (proj.stage === 'rendered' ? `?v=${Date.now()}` : '');
+  if (!player.dataset.src || player.dataset.src !== src) {
+    player.dataset.src = src;
+    player.src = full;
+  }
+  $('#abWrap').classList.toggle('hidden', proj.stage !== 'rendered');
+}
+$('#ab').onchange = () => { $('#player').dataset.src = ''; paintPlayer(); };
+
+/* Preset suggestion from the video's shape. Portrait is always a short; a long
+   landscape clip is usually narration-led, so it wants heavier ducking. A guess the
+   user can override, not a decision. */
+function suggestPreset() {
+  // The server picks this from shape *and* speech coverage, which is the stronger
+  // signal: a clip that is talking most of the time wants the music under it and the
+  // effects sparse, whatever its aspect ratio.
+  return proj.suggested_preset || null;
+}
+
+function shapeNote() {
+  const { width: w, height: h, duration: d } = proj;
+  if (!w || !h || proj.cues) return '';
+  const shape = h > w ? 'portrait' : w === h ? 'square' : '16:9';
+  const talk = proj.speech_coverage || 0;
+  const why = talk > 0.45 ? `, mostly narration (${Math.round(talk * 100)}% speech)` : '';
+  return `Suggested for this ${shape} ${Math.round(d)}s clip${why} — change it if it does not fit.`;
+}
+
+function paintSettings() {
+  const has = !!proj.cues;
+  $$('#preset,#lufs,#keepOriginal').forEach(el => el.disabled = !has);
+  $('#preset').innerHTML = Object.keys(lib.presets)
+    .map(p => `<option${has && p === proj.cues.preset ? ' selected' : ''}>${p}</option>`).join('');
+  if (has) {
+    $('#lufs').value = proj.cues.target_lufs;
+    $('#keepOriginal').value = String(proj.cues.keep_original_audio);
+  }
+  if (!has) {
+    const suggested = suggestPreset();
+    if (suggested) $('#preset').value = suggested;
+  }
+  const pre = lib.presets[$('#preset').value];
+  $('#presetHint').innerHTML = (shapeNote() ? `<em>${shapeNote()}</em><br>` : '')
+    + (pre ? pre.guidance : '');
+}
+
+function paintDownloads() {
+  $('#downloads').innerHTML = proj.stage === 'rendered' ? `
+    <a href="/download/${proj.name}/video"><button class="primary sm">Download video</button></a>
+    <a href="/download/${proj.name}/licence"><button class="ghost sm">Licence report</button></a>` : '';
+}
+
+/* --------------------------------------------------------- main action */
+
+function paintAction() {
+  const btn = $('#btnAct');
+  const busy = proj.job && ['queued', 'running'].includes(proj.job.status);
+  $('#previewWrap').classList.toggle('hidden', !proj.cues);
+  $('#btnSave').classList.toggle('hidden', !proj.cues);
+  btn.disabled = busy || proj.missing_source;
+
+  // `.length` matters: an empty array is truthy, which previously skipped this step
+  // entirely and left the user stuck on a scaffold call the server refuses.
+  if (!(proj.shots || []).length) { btn.textContent = 'Analyse video'; btn.onclick = doAnalyze; }
+  else if (!proj.cues) { btn.textContent = 'Create cue sheet'; btn.onclick = doScaffold; }
+  else { btn.textContent = proj.stage === 'rendered' ? 'Re-render' : 'Render'; btn.onclick = doRender; }
+}
+
+async function doAnalyze() {
+  $('#projBanner').innerHTML = '';
+  try { const job = await api(`/api/project/${proj.name}/analyze`, { method: 'POST' }); startPoll(job.id); }
+  catch (err) { showError('Cannot analyse', err.message); }
+}
+
+async function doScaffold() {
+  try {
+    await api(`/api/project/${proj.name}/scaffold`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset: $('#preset').value || 'short-form' }),
+    });
+    say('cue sheet created — edit the prompts, then render', 'muted');
+    await refresh();
+  } catch (err) { showError('Cannot create cue sheet', err.message); }
+}
+
+async function doRender() {
+  // Render saves first; if the sheet is invalid it cannot proceed, and silence here is
+  // what made the button look broken.
+  if (dirty && !(await saveCues())) {
+    say('fix the highlighted cues, then render', 'danger');
+    return;
+  }
+  try {
+    const job = await api(`/api/project/${proj.name}/render`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preview: $('#previewMode').checked, opted_in: [], allow_noncommercial: false }),
+    });
+    startPoll(job.id);
+  } catch (err) { say(err.message, 'danger'); }
+}
+
+/* ------------------------------------------------------------ polling */
+
+function startPoll(jobId) {
+  stopPoll();
+  $('#jobBox').classList.remove('hidden');
+  $('#btnAct').disabled = true;
+  poll = setInterval(async () => {
+    let job;
+    try { job = await api(`/api/job/${jobId}`); }
+    catch { stopPoll(); return; }
+
+    $('#jobLabel').textContent = job.kind === 'analyze' ? 'Analysing' : 'Rendering';
+    $('#jobTime').textContent = `${job.elapsed}s`;
+    const log = $('#jobLog');
+    log.textContent = job.log.join('\n');
+    log.scrollTop = log.scrollHeight;
+
+    if (job.status === 'done') {
+      stopPoll();
+      $('#jobSpin').classList.add('hidden');
+      const r = job.result || {};
+      say(r.lufs !== undefined
+        ? `${r.lufs} LUFS · peak ${r.peak} dBTP · ${r.generated} new, ${r.cached} reused`
+        : 'done', r.on_target === false ? 'danger' : 'muted');
+      $('#player').dataset.src = '';
+      await refresh();
+    } else if (job.status === 'error') {
+      stopPoll();
+      $('#jobSpin').classList.add('hidden');
+      $('#projBanner').innerHTML =
+        `<div class="banner err"><strong>${job.kind} failed</strong><br>${escapeHtml(job.error)}</div>`;
+      say('failed', 'danger');
+      $('#btnAct').disabled = false;
+    }
+  }, 700);
+}
+
+function stopPoll() {
+  if (poll) { clearInterval(poll); poll = null; }
+  $('#jobSpin').classList.remove('hidden');
+}
+
+function showError(title, detail) {
+  $('#projBanner').innerHTML =
+    `<div class="banner err"><strong>${escapeHtml(title)}</strong><br>${escapeHtml(detail)}</div>`;
+  say(title.toLowerCase(), 'danger');
+}
+
+const escapeHtml = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+/* ---------------------------------------------------------- timeline */
+
+function paintTimeline() {
+  const tl = $('#timeline');
+  $$(':scope > *:not(#playhead)', tl).forEach(n => n.remove());
+  const dur = (proj.cues && proj.cues.video.duration) || proj.duration || 0;
+  if (!dur) return;
+  const pct = t => `${(t / dur) * 100}%`;
+
+  for (const [a, b] of proj.speech_ranges || []) {
+    const el = document.createElement('div');
+    el.className = 'tl-speech'; el.style.left = pct(a); el.style.width = pct(b - a);
+    tl.append(el);
+  }
+  for (const s of proj.shots || []) {
+    const el = document.createElement('div');
+    el.className = 'tl-shot'; el.style.left = pct(s.start); tl.append(el);
+  }
+  if (!proj.cues) return;
+  ['music', 'ambience'].forEach((kind, row) => {
+    for (const bed of proj.cues[kind] || []) {
+      const el = document.createElement('div');
+      el.className = 'tl-bed';
+      el.style.left = pct(bed.start); el.style.width = pct(bed.end - bed.start);
+      el.style.top = `${7 + row * 16}px`;
+      el.style.background = kind === 'music' ? 'var(--music)' : 'var(--amb)';
+      el.title = `${bed.id}: ${bed.prompt}`;
+      tl.append(el);
+    }
+  });
+  for (const cue of proj.cues.sfx || []) {
+    const el = document.createElement('div');
+    el.className = 'tl-cue'; el.style.left = pct(cue.at);
+    el.title = `${cue.id} @ ${cue.at}s: ${cue.prompt}`;
+    tl.append(el);
+  }
+}
+
+$('#timeline').onclick = e => {
+  const dur = (proj && proj.cues && proj.cues.video.duration) || (proj && proj.duration) || 0;
+  if (!dur) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  $('#player').currentTime = ((e.clientX - r.left) / r.width) * dur;
+};
+$('#player').addEventListener('timeupdate', e => {
+  const dur = (proj && proj.cues && proj.cues.video.duration) || (proj && proj.duration) || 1;
+  $('#playhead').style.left = `${(e.target.currentTime / dur) * 100}%`;
+});
+
+/* -------------------------------------------------------------- cues */
+
+function markDirty() { dirty = true; say('unsaved changes', 'danger'); }
+
+function field(label, value, attrs, onInput) {
+  const wrap = document.createElement('div');
+  wrap.className = 'field';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const input = document.createElement(attrs.tag || 'input');
+  if (attrs.tag === 'select') {
+    input.innerHTML = attrs.options.map(o =>
+      `<option${String(o) === String(value) ? ' selected' : ''}>${o}</option>`).join('');
+  } else { Object.assign(input, attrs); input.value = value; }
+  input.addEventListener('input', () => { onInput(input.value); markDirty(); });
+  wrap.append(lab, input);
+  return wrap;
+}
+
+function engineOptions() {
+  const av = lib.engine_available || {};
+  return Object.keys(lib.engines)
+    .filter(id => id !== 'mmaudio')                       // excluded: non-commercial weights
+    .filter(id => av[id] !== false || id === 'silence')   // hide engines that cannot run
+    .concat(Object.keys(lib.engines).filter(id => av[id] === false && id !== 'mmaudio'));
+}
+
+function cueCard(cue, kind) {
+  const card = document.createElement('div');
+  card.className = 'cue' + (badCues.has(cue.id) ? ' bad' : '');
+
+  const top = document.createElement('div');
+  top.className = 'cue-top';
+  const id = document.createElement('span'); id.className = 'cue-id'; id.textContent = cue.id;
+  const at = kind === 'sfx' ? cue.at : cue.start;
+
+  const mk = (text, title, fn, cls = '') => {
+    const b = document.createElement('button');
+    b.className = `sm ghost ${cls}`; b.textContent = text; b.title = title; b.onclick = fn;
+    return b;
+  };
+  const seek = mk('seek', 'jump the player here', () => { $('#player').currentTime = at; });
+  const play = mk('stem', 'hear this cue on its own',
+    () => new Audio(`/media/${proj.name}/stem/${cue.id}`).play());
+  play.disabled = !proj.stems.includes(cue.id);
+  const reroll = mk('re-roll', 'new seed: regenerates only this cue on the next render', () => {
+    cue.seed = Math.floor(Math.random() * 100000); markDirty();
+  });
+  const del = mk('✕', 'remove this cue', () => {
+    proj.cues[kind] = proj.cues[kind].filter(c => c !== cue);
+    markDirty(); paintCues(); paintTimeline();
+  }, 'danger');
+
+  const spacer = document.createElement('div'); spacer.className = 'spacer';
+  top.append(id, seek, play, reroll, spacer, del);
+
+  const prompt = document.createElement('textarea');
+  prompt.value = cue.prompt;
+  prompt.placeholder = 'describe the SOUND, not the picture — material, size, space';
+  prompt.addEventListener('input', () => { cue.prompt = prompt.value; markDirty(); });
+
+  const fields = document.createElement('div');
+  fields.className = 'fields';
+  if (kind === 'sfx') {
+    fields.append(
+      field('at (s)', cue.at, { type: 'number', step: 0.05, min: 0 },
+        v => { cue.at = parseFloat(v) || 0; paintTimeline(); }),
+      field('length', cue.duration, { type: 'number', step: 0.1, min: 0.1 },
+        v => { cue.duration = parseFloat(v) || 1; }),
+      field('gain dB', cue.gain_db, { type: 'number', step: 0.5 },
+        v => { cue.gain_db = parseFloat(v) || 0; }),
+      field('pan', cue.pan, { type: 'number', step: 0.1, min: -1, max: 1 },
+        v => { cue.pan = parseFloat(v) || 0; }),
+    );
+  } else {
+    fields.append(
+      field('start', cue.start, { type: 'number', step: 0.1, min: 0 },
+        v => { cue.start = parseFloat(v) || 0; paintTimeline(); }),
+      field('end', cue.end, { type: 'number', step: 0.1, min: 0 },
+        v => { cue.end = parseFloat(v) || 0; paintTimeline(); }),
+      field('gain dB', cue.gain_db, { type: 'number', step: 0.5 },
+        v => { cue.gain_db = parseFloat(v) || 0; }),
+      field('duck', String(cue.duck), { tag: 'select', options: ['true', 'false'] },
+        v => { cue.duck = v === 'true'; }),
+    );
+  }
+  fields.append(field('engine', cue.engine, { tag: 'select', options: engineOptions() },
+    v => { cue.engine = v; }));
+
+  card.append(top, prompt, fields);
+  if (cue.note) {
+    const n = document.createElement('div'); n.className = 'note'; n.textContent = cue.note;
+    card.append(n);
+  }
+  return card;
+}
+
+function paintCues() {
+  const host = $('#cues');
+  host.innerHTML = '';
+  $$('[data-add]').forEach(b => b.disabled = !proj.cues);
+  if (!proj.cues) {
+    host.innerHTML = `<p class="tiny muted">No cue sheet yet. Press
+      <strong>Create cue sheet</strong> for a mechanical starting point &mdash; a bed plus an
+      accent on every cut &mdash; then reword the prompts.<br><br>
+      For cues designed from what is actually on screen, ask Claude:
+      <span class="mono">/sfx &lt;your video&gt;</span></p>`;
+    $('#cueCount').textContent = '';
+    return;
+  }
+  let total = 0;
+  for (const kind of ['music', 'ambience', 'sfx']) {
+    const items = proj.cues[kind] || [];
+    total += items.length;
+    if (!items.length) continue;
+    const head = document.createElement('div');
+    head.className = 'ghead';
+    head.innerHTML = `<h3>${kind}</h3><span class="tiny muted">${items.length}</span>`;
+    host.append(head);
+    [...items].sort((a, b) => (a.at ?? a.start) - (b.at ?? b.start))
+      .forEach(c => host.append(cueCard(c, kind)));
+  }
+  $('#cueCount').textContent = `${total}`;
+}
+
+// Starter prompts, so a newly added cue is valid the moment it exists. An empty prompt
+// fails the schema's minimum length, which made "+ effect" create a cue that could never
+// be saved - and, because Render saves first, made Render appear to do nothing.
+const STARTER_PROMPT = {
+  sfx: 'soft interface click, short bright tail',
+  music: 'calm instrumental underscore, no vocals, unobtrusive',
+  ambience: 'quiet room tone, soft air',
+};
+
+/* Free span for a new music bed. Overlapping beds are rejected by the schema because they
+   fight each other and wreck the loudness target, so do not create one that already
+   conflicts. */
+function freeMusicSpan(from, dur) {
+  const beds = [...(proj.cues.music || [])].sort((a, b) => a.start - b.start);
+  let start = from;
+  for (const bed of beds) {
+    if (start < bed.end && bed.start < start + 0.5) start = bed.end;
+  }
+  for (const bed of beds) {
+    if (bed.start > start) return start + 1.0 <= bed.start ? [start, Math.min(start + 10, bed.start)] : null;
+  }
+  return start + 1.0 <= dur ? [start, Math.min(start + 10, dur)] : null;
+}
+
+$$('[data-add]').forEach(btn => {
+  btn.onclick = () => {
+    const kind = btn.dataset.add;
+    const dur = proj.cues.video.duration;
+    const at = Math.min($('#player').currentTime || 0, dur);
+    const id = `${kind.slice(0, 3)}${String((proj.cues[kind] || []).length + 1).padStart(2, '0')}`;
+    const base = { id, prompt: STARTER_PROMPT[kind], seed: Math.floor(Math.random() * 100000), note: '' };
+
+    if (kind === 'sfx') {
+      proj.cues.sfx.push({ ...base, at: +Math.min(at, dur - 0.1).toFixed(2), duration: 1.5,
+        gain_db: -6, pan: 0, engine: 'stable-audio-3-small-sfx', align_transient: true, shot: null });
+    } else if (kind === 'music') {
+      const span = freeMusicSpan(at, dur);
+      if (!span) {
+        showError('No room for another music bed',
+          'A music bed already covers this part of the timeline. Only one can play at a '
+          + 'time — edit the existing bed, or shorten it to make space.');
+        return;
+      }
+      proj.cues.music.push({ ...base, start: +span[0].toFixed(2), end: +span[1].toFixed(2),
+        gain_db: -18, engine: 'stable-audio-3-medium', fade_in: 0.5, fade_out: 1.5,
+        duck: true, loop: false });
+    } else {
+      proj.cues.ambience.push({ ...base, start: +at.toFixed(2),
+        end: +Math.min(at + 10, dur).toFixed(2), gain_db: -26,
+        engine: 'stable-audio-3-medium', fade_in: 0.5, fade_out: 1.5, duck: true, loop: true });
+    }
+    $('#projBanner').innerHTML = '';
+    markDirty(); paintCues(); paintTimeline();
+  };
+});
+
+['preset', 'lufs', 'keepOriginal'].forEach(id => {
+  $(`#${id}`).addEventListener('change', () => {
+    if (!proj.cues) return;
+    proj.cues.preset = $('#preset').value;
+    proj.cues.target_lufs = parseFloat($('#lufs').value);
+    proj.cues.keep_original_audio = $('#keepOriginal').value === 'true';
+    $('#presetHint').textContent = lib.presets[$('#preset').value].guidance;
+    markDirty();
+  });
+});
+
+async function saveCues() {
+  try {
+    const res = await fetch(`/api/project/${proj.name}/cues`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(proj.cues),
+    });
+    if (!res.ok) { showCueErrors((await res.json()).detail); return false; }
+    dirty = false;
+    badCues.clear();
+    say('saved', 'muted');
+    $('#projBanner').innerHTML = '';
+    paintCues();
+    return true;
+  } catch (err) {
+    showError('Cannot save', err.message);
+    return false;
+  }
+}
+
+/* Name the cue and say what to do about it. A bare error count leaves the user to hunt
+   for the problem themselves. */
+function showCueErrors(detail) {
+  const list = Array.isArray(detail) ? detail : [{ cue: null, message: String(detail) }];
+  badCues.clear();
+  list.forEach(e => e.cue && badCues.add(e.cue));
+
+  const rows = list.map(e => e.cue
+    ? `<li><span class="mono" style="color:var(--accent)">${escapeHtml(e.cue)}</span> — ${escapeHtml(e.message)}</li>`
+    : `<li>${escapeHtml(e.message)}</li>`).join('');
+
+  $('#projBanner').innerHTML = `<div class="banner err">
+      <strong>${list.length === 1 ? 'One cue needs attention' : list.length + ' cues need attention'}</strong>
+      <ul style="margin:7px 0 0 18px; padding:0">${rows}</ul>
+    </div>`;
+  say('not saved', 'danger');
+  paintCues();
+
+  const first = $('.cue.bad');
+  if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+$('#btnSave').onclick = saveCues;
+
+/* ---------------------------------------------------------- licences */
+
+$('#btnLicences').onclick = () => {
+  const rows = Object.entries(lib.engines).map(([id, l]) => {
+    const status = !l.commercial ? '<span class="danger">not usable</span>'
+      : l.requires_optin ? '<span style="color:var(--accent)">opt-in</span>'
+      : '<span style="color:var(--ok)">commercial OK</span>';
+    const cond = !l.commercial ? 'Non-commercial weights — excluded by design.'
+      : l.territory_exclusions.length ? 'Excludes ' + l.territory_exclusions.join(', ') + '.'
+      : l.revenue_cap_usd ? `Free commercial use under $${(l.revenue_cap_usd / 1e6).toFixed(0)}M revenue. You own the outputs.`
+      : 'Unrestricted.';
+    return `<div style="padding:9px 0;border-bottom:1px solid var(--line)">
+      <div class="row"><strong class="mono tiny">${id}</strong><div class="spacer"></div>${status}</div>
+      <div class="tiny muted">${l.licence} — ${cond}</div></div>`;
+  }).join('');
+  $('#licenceBody').innerHTML = rows +
+    `<p class="tiny muted" style="margin-top:12px">Every sound is model-generated; each render
+     ships a licence report listing the engine, licence, prompt and seed per asset.</p>`;
+  $('#licenceDlg').showModal();
+};
+
+window.addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
+
+loadLibrary().catch(err => say(err.message, 'danger'));
+</script>
+</body>
+</html>

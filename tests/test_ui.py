@@ -1,0 +1,369 @@
+"""The GUI server.
+
+This process has the user's filesystem underneath it and accepts uploads, so path
+handling and validation are asserted rather than assumed. Jobs are driven to completion
+so the async paths are covered too, not just the request that starts them.
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+from saand.ui.server import create_app
+
+from .conftest import requires_ffmpeg
+
+pytestmark = requires_ffmpeg
+
+
+def wait_for(client: TestClient, job_id: str, timeout: float = 120.0) -> dict:
+    """Block until a background job finishes, then return it."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get(f"/api/job/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            return job
+        time.sleep(0.1)
+    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
+
+
+@pytest.fixture(scope="module")
+def client(tmp_path_factory):
+    return TestClient(create_app(tmp_path_factory.mktemp("workspace")))
+
+
+@pytest.fixture(scope="module")
+def project(client, fixture_video):
+    """A project imported by path, analysed, scaffolded and rendered in preview mode."""
+    res = client.post("/api/import/path", json={"path": str(fixture_video)})
+    assert res.status_code == 200
+    name = res.json()["name"]
+
+    job = client.post(f"/api/project/{name}/analyze").json()
+    assert wait_for(client, job["id"])["status"] == "done"
+
+    assert client.post(f"/api/project/{name}/scaffold",
+                       json={"preset": "short-form"}).status_code == 200
+
+    job = client.post(f"/api/project/{name}/render", json={"preview": True}).json()
+    assert wait_for(client, job["id"])["status"] == "done"
+    return name
+
+
+class TestImport:
+    def test_serves_the_page(self, client):
+        res = client.get("/")
+        assert res.status_code == 200 and "Saand Efectos" in res.text
+
+    def test_import_by_path(self, client, fixture_video):
+        res = client.post("/api/import/path", json={"path": str(fixture_video)})
+        assert res.status_code == 200
+        assert res.json()["name"]
+
+    def test_import_by_upload(self, client, fixture_video):
+        with open(fixture_video, "rb") as handle:
+            res = client.post("/api/import/upload",
+                              files={"file": ("clip.mp4", handle, "video/mp4")})
+        assert res.status_code == 200
+        name = res.json()["name"]
+        assert client.get(f"/media/{name}/source").status_code == 200
+
+    def test_rejects_a_non_video_upload(self, client):
+        res = client.post("/api/import/upload",
+                          files={"file": ("notes.txt", b"hello", "text/plain")})
+        assert res.status_code == 415
+
+    def test_missing_path_is_reported(self, client):
+        res = client.post("/api/import/path", json={"path": "C:/nope/missing.mp4"})
+        assert res.status_code == 404
+
+    def test_names_do_not_collide(self, client, fixture_video):
+        first = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        second = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        assert first != second
+
+
+class TestWorkflow:
+    def test_library_lists_the_project(self, client, project):
+        data = client.get("/api/library").json()
+        assert any(p["name"] == project for p in data["projects"])
+        assert "short-form" in data["presets"]
+        assert data["engine_available"]["silence"] is True
+
+    def test_stage_advances_to_rendered(self, client, project):
+        assert client.get(f"/api/project/{project}").json()["stage"] == "rendered"
+
+    def test_analysis_results_are_exposed(self, client, project):
+        data = client.get(f"/api/project/{project}").json()
+        assert len(data["shots"]) >= 3
+        assert data["contact_sheets"]
+
+    def test_scaffold_produces_cues(self, client, project):
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+        assert cues["music"] and cues["sfx"]
+
+    def test_render_reports_loudness(self, client, project):
+        job = [j for j in client.get("/api/library").json()["jobs"]
+               if j["project"] == project and j["kind"] == "render"][0]
+        assert job["result"]["lufs"] == pytest.approx(-14.0, abs=1.5)
+
+    def test_preview_mode_leaves_the_saved_sheet_alone(self, client, project):
+        """Preview swaps engines at render time; it must not rewrite cues.json."""
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+        assert all(c["engine"] != "silence" for c in cues["sfx"]), \
+            "preview mode overwrote the saved engines"
+
+    def test_scaffold_before_analysis_is_refused(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        res = client.post(f"/api/project/{name}/scaffold", json={"preset": "short-form"})
+        assert res.status_code == 409
+
+    def test_render_without_cues_is_refused(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        res = client.post(f"/api/project/{name}/render", json={})
+        assert res.status_code == 409
+
+
+class TestMedia:
+    def test_serves_video_and_stems(self, client, project):
+        assert client.get(f"/media/{project}/video").status_code == 200
+        assert client.get(f"/media/{project}/source").status_code == 200
+        stems = client.get(f"/api/project/{project}").json()["stems"]
+        assert stems
+        assert client.get(f"/media/{project}/stem/{stems[0]}").status_code == 200
+
+    def test_downloads_are_attachments(self, client, project):
+        res = client.get(f"/download/{project}/video")
+        assert res.status_code == 200
+        assert "attachment" in res.headers.get("content-disposition", "")
+        assert client.get(f"/download/{project}/licence").status_code == 200
+
+    def test_unknown_stem_is_404(self, client, project):
+        assert client.get(f"/media/{project}/stem/nope").status_code == 404
+
+
+class TestSafety:
+    def test_project_name_cannot_escape_the_workspace(self, client):
+        """A crafted project name must not reach outside the workspace directory.
+
+        Percent-encoded separators only: an unencoded `../..` is collapsed by the HTTP
+        client before the request is sent, so it never exercises the handler.
+        """
+        for attempt in ("..%2F..", "..%5C..", "%2e%2e%2f%2e%2e", "....//", "%2e%2e"):
+            res = client.get(f"/api/project/{attempt}")
+            assert res.status_code == 404, f"{attempt} reached the handler"
+
+    def test_contact_sheet_path_traversal_is_refused(self, client, project):
+        for attempt in ("..%2F..%2Fcues.json", "..%5Ccues.json", "....//cues.json"):
+            assert client.get(f"/media/{project}/contact/{attempt}").status_code == 404
+
+    def test_invalid_cue_sheet_is_rejected_with_a_readable_reason(self, client, project):
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+        cues["sfx"][0]["at"] = 9999.0
+        res = client.put(f"/api/project/{project}/cues", json=cues)
+        assert res.status_code == 422
+        # Errors come back as a list so the page can point at the cue that is wrong.
+        assert "past the" in " ".join(e["message"] for e in res.json()["detail"])
+
+    def test_valid_cue_sheet_round_trips(self, client, project):
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+        cues["sfx"][0]["prompt"] = "a reworded whoosh"
+        assert client.put(f"/api/project/{project}/cues", json=cues).status_code == 200
+        after = client.get(f"/api/project/{project}").json()["cues"]
+        assert after["sfx"][0]["prompt"] == "a reworded whoosh"
+
+    def test_restricted_engine_is_refused_at_render(self, client, project):
+        """The licence gate must hold through the GUI, not just the CLI."""
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+        original = cues["sfx"][0]["engine"]
+        cues["sfx"][0]["engine"] = "hunyuan-foley"
+        client.put(f"/api/project/{project}/cues", json=cues)
+
+        job = client.post(f"/api/project/{project}/render", json={}).json()
+        finished = wait_for(client, job["id"])
+        assert finished["status"] == "error"
+        assert "opt-in" in finished["error"]
+
+        cues["sfx"][0]["engine"] = original
+        client.put(f"/api/project/{project}/cues", json=cues)
+
+    def test_deleting_a_project_removes_it(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        assert client.delete(f"/api/project/{name}").status_code == 200
+        assert client.get(f"/api/project/{name}").status_code == 404
+
+
+class TestFreshProjectContract:
+    """A just-imported project reports empty analysis, and the page must handle that.
+
+    An empty list is truthy in JavaScript. Gating the Analyse step on `proj.shots`
+    rather than `proj.shots.length` skipped the step entirely, so the page offered
+    "Create cue sheet" on an unanalysed project and the server refused it with no way
+    forward. These pin both halves of that contract.
+    """
+
+    def test_fresh_project_reports_empty_analysis(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        data = client.get(f"/api/project/{name}").json()
+        assert data["stage"] == "imported"
+        assert data["shots"] == []
+        assert data["cues"] is None
+
+    def test_page_gates_the_analyse_step_on_length(self):
+        from saand.ui.server import HERE
+
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        assert "!(proj.shots || []).length" in page,             "the Analyse step must test array length, not array truthiness"
+        assert "if (!proj.shots)" not in page,             "truthiness check on proj.shots reintroduces the stuck-on-import bug"
+
+
+class TestValidationFeedback:
+    """A save that fails must say which cue is wrong and what to do about it.
+
+    Render saves before rendering, so an unreadable validation failure made the Render
+    button appear to do nothing at all.
+    """
+
+    def test_empty_prompt_names_the_offending_cue(self, client, project):
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+        cues["sfx"].append({
+            "id": "sfx99", "at": 1.0, "duration": 1.5, "prompt": "",
+            "engine": "silence", "gain_db": -6, "pan": 0, "seed": 5,
+            "align_transient": True, "shot": None, "note": "",
+        })
+        res = client.put(f"/api/project/{project}/cues", json=cues)
+        assert res.status_code == 422
+
+        detail = res.json()["detail"]
+        assert isinstance(detail, list)
+        entry = next(e for e in detail if e["cue"] == "sfx99")
+        assert "description of the sound" in entry["message"]
+
+    def test_every_bad_cue_is_reported_not_just_the_first(self, client, project):
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+        for n in (1, 2, 3):
+            cues["sfx"].append({
+                "id": f"bad{n}", "at": float(n), "duration": 1.0, "prompt": "",
+                "engine": "silence", "gain_db": -6, "pan": 0, "seed": n,
+                "align_transient": True, "shot": None, "note": "",
+            })
+        detail = client.put(f"/api/project/{project}/cues", json=cues).json()["detail"]
+        assert {"bad1", "bad2", "bad3"} <= {e["cue"] for e in detail}
+
+    def test_overlapping_music_beds_explain_themselves(self, client, project):
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+        span = cues["video"]["duration"]
+        cues["music"] = [
+            {"id": "m1", "start": 0.0, "end": span, "prompt": "a bed",
+             "engine": "silence", "gain_db": -18, "fade_in": 0.5, "fade_out": 1.0,
+             "duck": True, "loop": False, "seed": 1, "note": ""},
+            {"id": "m2", "start": 2.0, "end": span, "prompt": "another bed",
+             "engine": "silence", "gain_db": -18, "fade_in": 0.5, "fade_out": 1.0,
+             "duck": True, "loop": False, "seed": 2, "note": ""},
+        ]
+        res = client.put(f"/api/project/{project}/cues", json=cues)
+        assert res.status_code == 422
+        assert "overlap" in " ".join(e["message"] for e in res.json()["detail"])
+
+    def test_page_gives_new_cues_a_valid_starter_prompt(self):
+        """Otherwise "+ effect" creates a cue that can never be saved."""
+        from saand.ui.server import HERE
+
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        assert "STARTER_PROMPT" in page
+        assert "prompt: ''" not in page, "a new cue must not start with an empty prompt"
+
+
+class TestEngineAuthReporting:
+    """The gated weights are the last blocker, so the page must state it, not discover it.
+
+    `model_info` succeeds on a gated repo it cannot download from, so the check has to be
+    `auth_check` - otherwise the app reports everything is fine until a render dies.
+    """
+
+    def test_library_reports_auth_state(self, client):
+        auth = client.get("/api/library").json()["engine_auth"]
+        assert set(auth) >= {"needed", "logged_in", "authorised"}
+
+    def test_auth_check_is_used_rather_than_model_info(self):
+        import inspect
+
+        from saand.engines import stable_audio3
+
+        source = inspect.getsource(stable_audio3.StableAudio3Engine.is_authorised)
+        assert "auth_check(" in source
+        assert "model_info(" not in source,             "model_info succeeds on a gated repo that cannot actually be downloaded"
+
+    def test_gated_failure_explains_both_steps(self):
+        from saand.engines.stable_audio3 import StableAudio3Engine
+
+        message = StableAudio3Engine("stable-audio-3-medium")._gated_message()
+        assert "huggingface.co/stabilityai/stable-audio-3-medium" in message
+        assert "hf auth login" in message
+        assert "preview" in message
+
+    def test_gated_errors_are_recognised(self):
+        """Detection works on the message text, so it survives hub version changes."""
+        import inspect
+
+        from saand.engines import stable_audio3
+        from saand.engines.stable_audio3 import _is_gated
+
+        assert _is_gated(RuntimeError("401 Client Error"))
+        assert _is_gated(RuntimeError("Cannot access gated repo for url ..."))
+        assert not _is_gated(RuntimeError("CUDA out of memory"))
+        # The typed check is the primary path; the text match is the fallback.
+        assert "GatedRepoError" in inspect.getsource(stable_audio3._is_gated)
+
+
+class TestOfflineOperation:
+    """Generation, mixing and mastering must work with no network at all.
+
+    The only thing that ever needs the internet is the one-time weight download. Anything
+    else reaching out turns a local tool into one that stalls or leaks when it should not.
+    """
+
+    def test_no_outbound_calls_once_weights_are_cached(self, monkeypatch, tmp_path):
+        import saand.ui.server as server
+
+        weights = tmp_path / "models--stabilityai--stable-audio-3-small-sfx" / "snapshots" / "abc"
+        weights.mkdir(parents=True)
+        (weights / "model.safetensors").write_bytes(b"x")
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(server, "_AUTH_CACHE", None)
+
+        def explode(*a, **k):
+            raise AssertionError("reached the network when weights were already local")
+
+        monkeypatch.setattr("huggingface_hub.HfApi.auth_check", explode)
+        assert server._engine_auth()["needed"] is False
+
+    def test_offline_flag_short_circuits_the_check(self, monkeypatch):
+        import saand.ui.server as server
+
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        monkeypatch.setattr(server, "_AUTH_CACHE", None)
+        monkeypatch.setattr(
+            "huggingface_hub.HfApi.auth_check",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("called while offline")),
+        )
+        result = server._engine_auth()
+        assert result["offline"] is True and result["needed"] is False
+
+    def test_result_is_cached_across_page_loads(self, monkeypatch):
+        import saand.ui.server as server
+
+        monkeypatch.setattr(server, "_AUTH_CACHE", None)
+        calls = []
+        monkeypatch.setattr("huggingface_hub.HfApi.auth_check",
+                            lambda self, repo, **k: calls.append(repo))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+        monkeypatch.setenv("HF_HUB_CACHE", "/nonexistent-so-the-check-runs")
+
+        server._engine_auth()
+        server._engine_auth()
+        server._engine_auth()
+        assert len(calls) <= 1, "the page reached out once per load instead of once per process"
