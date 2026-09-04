@@ -491,3 +491,46 @@ class TestVerdictThroughTheGui:
         lib = client.get("/api/library").json()
         mine = next(p for p in lib["projects"] if p["name"] == project)
         assert mine["verdict"] == job["result"]["verdict"]
+
+
+class TestDeleteIsRecoverable:
+    """Delete moves a project to the trash; only a second, separate step destroys it.
+
+    Three projects holding a rendered video and dozens of cached stems vanished after a
+    confirmed click, straight past the Recycle Bin. A project is hours of GPU work and
+    possibly a hand-tuned cue sheet; one click must not be the end of it.
+    """
+
+    def test_deleted_project_is_restorable(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        assert client.delete(f"/api/project/{name}").status_code == 200
+        assert client.get(f"/api/project/{name}").status_code == 404
+
+        trash = client.get("/api/trash").json()["items"]
+        entry = next(t for t in trash if t["name"] == name)
+        assert client.post(f"/api/trash/{entry['trashed_as']}/restore").status_code == 200
+        assert client.get(f"/api/project/{name}").status_code == 200
+
+    def test_trash_is_not_addressable_as_a_project(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        client.delete(f"/api/project/{name}")
+        assert client.get("/api/project/.trash").status_code == 404
+        assert all(p["name"] != ".trash" for p in client.get("/api/library").json()["projects"])
+
+    def test_purge_is_the_only_irreversible_step(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        client.delete(f"/api/project/{name}")
+        entry = next(t for t in client.get("/api/trash").json()["items"] if t["name"] == name)
+        assert client.delete(f"/api/trash/{entry['trashed_as']}").status_code == 200
+        assert all(t["trashed_as"] != entry["trashed_as"]
+                   for t in client.get("/api/trash").json()["items"])
+
+    def test_restore_does_not_clobber_a_reused_name(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        client.delete(f"/api/project/{name}")
+        entry = next(t for t in client.get("/api/trash").json()["items"] if t["name"] == name)
+        # The same name gets created again in the meantime.
+        again = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        assert again == name
+        restored = client.post(f"/api/trash/{entry['trashed_as']}/restore").json()["name"]
+        assert restored != name and restored.startswith(name)

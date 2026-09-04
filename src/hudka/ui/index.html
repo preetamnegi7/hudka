@@ -180,6 +180,11 @@
   </div>
   <div class="grid" id="projects"></div>
   <p class="muted tiny" id="emptyLib" style="display:none">Nothing yet. Add a video above to start.</p>
+
+  <details id="trashWrap" class="adv hidden" style="margin-top:22px">
+    <summary>Recently deleted</summary>
+    <div class="advbody" id="trash"></div>
+  </details>
 </div>
 
 <!-- ============================ EDITOR ============================ -->
@@ -342,13 +347,47 @@ async function loadLibrary() {
     card.onclick = e => { if (!e.target.dataset.del) openProject(p.name); };
     $('[data-del]', card).onclick = async e => {
       e.stopPropagation();
-      if (!confirm(`Delete project "${p.name}" and everything in it?`)) return;
+      if (!confirm(`Move "${p.name}" to Recently deleted? You can restore it from the bottom of this page.`)) return;
       try { await api(`/api/project/${p.name}`, { method: 'DELETE' }); await loadLibrary(); }
       catch (err) { say(err.message, 'danger'); }
     };
     host.append(card);
   }
   renderEngineBanner();
+  loadTrash();
+}
+
+/* Deleted projects are moved, not destroyed. This is where they come back from. */
+async function loadTrash() {
+  let items = [];
+  try { items = (await api('/api/trash')).items; } catch { return; }
+  const wrap = $('#trashWrap');
+  wrap.classList.toggle('hidden', !items.length);
+  const host = $('#trash');
+  host.innerHTML = '';
+  for (const t of items) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.padding = '6px 0';
+    row.innerHTML = `<span class="mono tiny">${t.name}</span>
+      <span class="tiny muted">${t.size_mb} MB · deleted ${t.deleted_at.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}/, '$1-$2-$3 $4:$5')}</span>
+      <div class="spacer"></div>`;
+    const restore = document.createElement('button');
+    restore.className = 'sm'; restore.textContent = 'Restore';
+    restore.onclick = async () => {
+      try { await api(`/api/trash/${t.trashed_as}/restore`, { method: 'POST' }); await loadLibrary(); }
+      catch (err) { say(err.message, 'danger'); }
+    };
+    const purge = document.createElement('button');
+    purge.className = 'sm ghost danger'; purge.textContent = 'Delete forever';
+    purge.onclick = async () => {
+      if (!confirm(`Permanently delete "${t.name}"? This cannot be undone.`)) return;
+      try { await api(`/api/trash/${t.trashed_as}`, { method: 'DELETE' }); await loadTrash(); }
+      catch (err) { say(err.message, 'danger'); }
+    };
+    row.append(restore, purge);
+    host.append(row);
+  }
 }
 
 function renderEngineBanner() {

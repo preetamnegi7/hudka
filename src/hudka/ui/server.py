@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -69,11 +70,17 @@ def create_app(workspace: Path) -> FastAPI:
     # ---------------------------------------------------------------- helpers
 
     def project_dir(name: str) -> Path:
-        """Resolve a project by name, refusing anything outside the workspace."""
+        """Resolve a project by name, refusing anything outside the workspace.
+
+        Dot-names are refused too: `.trash` lives inside the workspace and must never be
+        addressable as a project.
+        """
         target = (workspace / name).resolve()
-        if target.parent != workspace or not target.is_dir():
+        if name.startswith(".") or target.parent != workspace or not target.is_dir():
             raise HTTPException(status_code=404, detail=f"no project {name!r}")
         return target
+
+    trash_dir = workspace / ".trash"
 
     def source_video(project: Path) -> Path | None:
         cues = project / "cues.json"
@@ -238,10 +245,58 @@ def create_app(workspace: Path) -> FastAPI:
 
     @app.delete("/api/project/{name}")
     def api_delete(name: str) -> JSONResponse:
+        """Move a project to the workspace trash - never destroy it outright.
+
+        A project can hold hours of GPU work and a cue sheet someone tuned by hand.
+        `rmtree` bypasses the Recycle Bin, so one confirmed click used to be the end of
+        it. Now it is a move, and the library offers Restore.
+        """
         target = project_dir(name)
         if runner.active_for(name):
             raise HTTPException(status_code=409, detail="a job is still running on this project")
-        shutil.rmtree(target)
+        trash_dir.mkdir(exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        shutil.move(str(target), str(trash_dir / f"{name}__{stamp}"))
+        return JSONResponse({"ok": True, "trashed_as": f"{name}__{stamp}"})
+
+    def _trash_entries() -> list[dict]:
+        if not trash_dir.is_dir():
+            return []
+        entries = []
+        for item in sorted(trash_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not item.is_dir() or "__" not in item.name:
+                continue
+            original, _, stamp = item.name.rpartition("__")
+            entries.append({"trashed_as": item.name, "name": original, "deleted_at": stamp,
+                            "size_mb": round(sum(f.stat().st_size for f in item.rglob("*")
+                                                 if f.is_file()) / 1e6)})
+        return entries
+
+    @app.get("/api/trash")
+    def api_trash() -> JSONResponse:
+        return JSONResponse({"items": _trash_entries()})
+
+    @app.post("/api/trash/{trashed_as}/restore")
+    def api_restore(trashed_as: str) -> JSONResponse:
+        source = (trash_dir / trashed_as).resolve()
+        if not source.is_dir() or source.parent != trash_dir.resolve():
+            raise HTTPException(status_code=404, detail="nothing by that name in the trash")
+        original, _, _ = trashed_as.rpartition("__")
+        dest = workspace / original
+        n = 2
+        while dest.exists():                       # the name was reused meanwhile
+            dest = workspace / f"{original}-{n}"
+            n += 1
+        shutil.move(str(source), str(dest))
+        return JSONResponse({"ok": True, "name": dest.name})
+
+    @app.delete("/api/trash/{trashed_as}")
+    def api_purge(trashed_as: str) -> JSONResponse:
+        """The only irreversible delete, and it takes two deliberate steps to reach."""
+        source = (trash_dir / trashed_as).resolve()
+        if not source.is_dir() or source.parent != trash_dir.resolve():
+            raise HTTPException(status_code=404, detail="nothing by that name in the trash")
+        shutil.rmtree(source)
         return JSONResponse({"ok": True})
 
     # ----------------------------------------------------------------- stages
