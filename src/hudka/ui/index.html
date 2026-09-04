@@ -79,16 +79,45 @@
   .sticky { position:sticky; top:66px; }
   video { width:100%; border-radius:8px; background:#000; display:block; }
 
-  /* Timeline */
-  .timeline { position:relative; height:76px; margin-top:12px; border:1px solid var(--line);
-    border-radius:7px; background:#101219; overflow:hidden; cursor:pointer; }
-  .tl-speech { position:absolute; top:0; height:100%; background:var(--speech); opacity:.6; }
-  .tl-shot { position:absolute; top:0; height:100%; border-left:1px solid #39405240; }
-  .tl-bed { position:absolute; height:12px; border-radius:3px; opacity:.85; }
-  .tl-cue { position:absolute; width:2px; height:26px; bottom:7px; background:var(--sfx); }
-  .tl-cue::after { content:''; position:absolute; top:-4px; left:-3px; width:8px; height:8px;
-    border-radius:50%; background:var(--sfx); }
-  .tl-play { position:absolute; top:0; width:1.5px; height:100%; background:var(--accent); pointer-events:none; }
+  /* Timeline: a scrolling multi-track view. Lane labels stay pinned while the tracks
+     scroll under them, so a wide zoom never loses which lane is which. */
+  .tlwrap { margin-top:12px; border:1px solid var(--line); border-radius:8px;
+    background:#0d0f14; overflow:hidden; }
+  .tlbar { display:flex; align-items:center; gap:10px; padding:6px 9px;
+    border-bottom:1px solid var(--line); }
+  .tlbody { display:flex; align-items:stretch; }
+  .tlnames { width:64px; flex:0 0 64px; border-right:1px solid var(--line); background:#0b0d12; }
+  .tlnames .pad { height:20px; border-bottom:1px solid var(--line); }
+  .tl-name { height:38px; border-top:1px solid #1c202b; display:flex; align-items:center;
+    padding-left:8px; font-size:9.5px; letter-spacing:.07em; text-transform:uppercase;
+    color:var(--faint); user-select:none; }
+  .tl-name.sfx { height:26px; }
+  .tlscroll { overflow-x:auto; overflow-y:hidden; position:relative; flex:1; min-width:0; }
+  .tlinner { position:relative; min-width:100%; }
+  .tl-ruler { height:20px; position:relative; border-bottom:1px solid var(--line);
+    background:#0b0d12; }
+  .tl-tick { position:absolute; top:0; height:100%; border-left:1px solid #2a2f3d;
+    font-size:9.5px; color:var(--faint); padding-left:3px; line-height:20px;
+    user-select:none; white-space:nowrap; }
+  .tl-lane { position:relative; height:38px; border-top:1px solid #1c202b; }
+  .tl-lane.sfx { height:26px; }
+  .tl-shot { position:absolute; top:0; bottom:0; border-left:1px solid #39405255;
+    pointer-events:none; z-index:1; }
+  .tl-speech { position:absolute; top:4px; height:30px; background:var(--speech);
+    border-radius:3px; opacity:.55; }
+  .tl-clip { position:absolute; border-radius:4px; cursor:grab; overflow:hidden;
+    font-size:10px; line-height:1.2; padding:2px 4px; color:#0d0f14; font-weight:600;
+    white-space:nowrap; text-overflow:ellipsis; border:1px solid transparent; z-index:2; }
+  .tl-clip:hover { filter:brightness(1.12); }
+  .tl-clip.sel { border-color:#fff; box-shadow:0 0 0 1px var(--accent); z-index:4; }
+  .tl-clip.dragging { cursor:grabbing; opacity:.85; }
+  .tl-clip.muted { opacity:.32; }
+  .tl-clip.bed { top:4px; height:30px; }
+  .tl-clip.hit { top:3px; height:20px; min-width:3px; padding:0; }
+  .tl-grip { position:absolute; top:0; bottom:0; width:6px; cursor:ew-resize; z-index:5; }
+  .tl-grip.l { left:0; } .tl-grip.r { right:0; }
+  .tl-play { position:absolute; top:0; bottom:0; width:1.5px; background:var(--accent);
+    pointer-events:none; z-index:6; }
   .legend { display:flex; gap:14px; font-size:11px; color:var(--dim); margin-top:8px; flex-wrap:wrap; }
   .sw { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
 
@@ -97,6 +126,7 @@
   .ghead h3 { font-size:11px; margin:0; color:var(--dim); text-transform:uppercase; letter-spacing:.09em; }
   .cue { border:1px solid var(--line); border-radius:9px; padding:11px; margin-bottom:9px; background:#12141b; }
   .cue.bad { border-color:var(--danger); background:#ff7a7a08; }
+  .cue.sel { border-color:var(--accent); }
   .cue-top { display:flex; align-items:center; gap:7px; margin-bottom:8px; }
   .cue-id { font-family:ui-monospace,monospace; font-size:12px; color:var(--accent); min-width:58px; }
   .cue textarea { width:100%; resize:vertical; min-height:46px; font-size:13px; }
@@ -201,7 +231,26 @@
           <label class="tiny muted" id="abWrap"><input type="checkbox" id="ab" style="vertical-align:-2px"> original</label>
         </div>
         <video id="player" controls preload="metadata"></video>
-        <div class="timeline" id="timeline"><div class="tl-play" id="playhead"></div></div>
+        <div class="tlwrap">
+          <div class="tlbar">
+            <span class="tiny muted" id="tlInfo"></span>
+            <div class="spacer"></div>
+            <button class="sm ghost" id="tlOut" title="Zoom out">&minus;</button>
+            <span class="tiny muted mono" id="tlZoom" style="min-width:52px;text-align:center"></span>
+            <button class="sm ghost" id="tlIn" title="Zoom in">+</button>
+            <button class="sm ghost" id="tlFit" title="Fit the whole video">Fit</button>
+          </div>
+          <div class="tlbody">
+            <div class="tlnames" id="tlNames"><div class="pad"></div></div>
+            <div class="tlscroll" id="tlScroll">
+              <div class="tlinner" id="tlInner">
+                <div class="tl-ruler" id="tlRuler"></div>
+                <div id="tlLanes"></div>
+                <div class="tl-play" id="playhead"></div>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="legend">
           <span><i class="sw" style="background:var(--music)"></i>music</span>
           <span><i class="sw" style="background:var(--amb)"></i>ambience</span>
@@ -468,9 +517,10 @@ $('#pathInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#bt
 
 /* ============================== EDITOR ============================== */
 
-function showLibrary() {
+function showLibrary(fromHistory = false) {
   stopPoll();
   proj = null; markClean();
+  if (!fromHistory && location.hash) location.hash = '';
   $('#viewLibrary').classList.remove('hidden');
   $('#viewProject').classList.add('hidden');
   $('#btnBack').classList.add('hidden');
@@ -485,8 +535,9 @@ $('#btnBack').onclick = () => {
 
 let viewPreview = false;   // player shows preview.mp4 rather than final.mp4
 
-async function openProject(name) {
+async function openProject(name, fromHistory = false) {
   proj = await api(`/api/project/${name}`);
+  if (!fromHistory && location.hash !== `#/p/${name}`) location.hash = `#/p/${name}`;
   markClean();
   viewPreview = false;
   $('#previewMode').checked = false;
@@ -496,6 +547,7 @@ async function openProject(name) {
   $('#btnBack').classList.remove('hidden');
   $('#crumb').textContent = proj.name;
   paintProject();
+  fitTimeline();
   if (proj.job && ['queued', 'running'].includes(proj.job.status)) startPoll(proj.job.id);
 }
 
@@ -791,51 +843,251 @@ const escapeHtml = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '
 
 /* ---------------------------------------------------------- timeline */
 
-function paintTimeline() {
-  const tl = $('#timeline');
-  $$(':scope > *:not(#playhead)', tl).forEach(n => n.remove());
-  const dur = (proj.cues && proj.cues.video.duration) || proj.duration || 0;
-  if (!dur) return;
-  const pct = t => `${(t / dur) * 100}%`;
+let pxPerSec = 12;          // timeline zoom
+let selectedCue = null;     // cue id shown as selected in both views
 
-  for (const [a, b] of proj.speech_ranges || []) {
-    const el = document.createElement('div');
-    el.className = 'tl-speech'; el.style.left = pct(a); el.style.width = pct(b - a);
-    tl.append(el);
-  }
-  for (const s of proj.shots || []) {
-    const el = document.createElement('div');
-    el.className = 'tl-shot'; el.style.left = pct(s.start); tl.append(el);
-  }
-  if (!proj.cues) return;
-  ['music', 'ambience'].forEach((kind, row) => {
-    for (const bed of proj.cues[kind] || []) {
-      const el = document.createElement('div');
-      el.className = 'tl-bed';
-      el.style.left = pct(bed.start); el.style.width = pct(bed.end - bed.start);
-      el.style.top = `${7 + row * 16}px`;
-      el.style.background = kind === 'music' ? 'var(--music)' : 'var(--amb)';
-      el.title = `${bed.id}: ${bed.prompt}`;
-      tl.append(el);
+const cueTime = c => (c.at !== undefined ? c.at : c.start);
+const cueLen = c => (c.at !== undefined ? c.duration : c.end - c.start);
+const videoDuration = () =>
+  (proj && proj.cues && proj.cues.video.duration) || (proj && proj.duration) || 0;
+
+/* Overlapping effects are stacked into as many lanes as they need, the way an editor
+   would lay them out by hand. Greedy first-fit: a cue goes in the first lane whose last
+   clip has already ended, so a dense passage grows lanes and a sparse one stays flat. */
+function packLanes(cues, gap = 0.05) {
+  const lanes = [];
+  for (const cue of [...cues].sort((a, b) => cueTime(a) - cueTime(b))) {
+    const start = cueTime(cue), end = start + cueLen(cue);
+    let placed = false;
+    for (const lane of lanes) {
+      if (start >= lane.until - gap) { lane.cues.push(cue); lane.until = end; placed = true; break; }
     }
-  });
-  for (const cue of proj.cues.sfx || []) {
-    const el = document.createElement('div');
-    el.className = 'tl-cue'; el.style.left = pct(cue.at);
-    el.title = `${cue.id} @ ${cue.at}s: ${cue.prompt}`;
-    tl.append(el);
+    if (!placed) lanes.push({ cues: [cue], until: end });
   }
+  return lanes.map(l => l.cues);
 }
 
-$('#timeline').onclick = e => {
-  const dur = (proj && proj.cues && proj.cues.video.duration) || (proj && proj.duration) || 0;
-  if (!dur) return;
-  const r = e.currentTarget.getBoundingClientRect();
-  $('#player').currentTime = ((e.clientX - r.left) / r.width) * dur;
-};
-$('#player').addEventListener('timeupdate', e => {
-  const dur = (proj && proj.cues && proj.cues.video.duration) || (proj && proj.duration) || 1;
-  $('#playhead').style.left = `${(e.target.currentTime / dur) * 100}%`;
+function paintTimeline() {
+  const dur = videoDuration();
+  const lanes = $('#tlLanes');
+  const ruler = $('#tlRuler');
+  if (!lanes || !ruler) return;
+  if (!dur) { lanes.innerHTML = ''; ruler.innerHTML = ''; return; }
+
+  const width = Math.max(dur * pxPerSec, 200);
+  $('#tlInner').style.width = `${width + 8}px`;
+  $('#tlZoom').textContent = `${pxPerSec.toFixed(0)} px/s`;
+  const x = s => s * pxPerSec;
+
+  // Ruler: a tick roughly every 90px, on a round number of seconds.
+  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+  const step = steps.find(s => s * pxPerSec >= 90) || steps[steps.length - 1];
+  ruler.innerHTML = '';
+  for (let s = 0; s <= dur; s += step) {
+    const tick = document.createElement('div');
+    tick.className = 'tl-tick';
+    tick.style.left = `${x(s)}px`;
+    tick.textContent = fmt(s);
+    ruler.append(tick);
+  }
+
+  lanes.innerHTML = '';
+  const shots = (proj.shots || []).map(s => s.start).filter(s => s > 0.01);
+
+  const names = $('#tlNames');
+  names.innerHTML = '<div class="pad"></div>';
+
+  const addLane = (label, cls = '') => {
+    const tag = document.createElement('div');
+    tag.className = `tl-name ${cls}`;
+    tag.textContent = label;
+    names.append(tag);
+
+    const lane = document.createElement('div');
+    lane.className = `tl-lane ${cls}`;
+    for (const s of shots) {                       // shot boundaries across every lane
+      const line = document.createElement('div');
+      line.className = 'tl-shot';
+      line.style.left = `${x(s)}px`;
+      lane.append(line);
+    }
+    lane.addEventListener('mousedown', e => {      // empty lane: seek
+      if (e.target !== lane) return;
+      const rect = $('#tlInner').getBoundingClientRect();
+      $('#player').currentTime = Math.max(0, (e.clientX - rect.left) / pxPerSec);
+    });
+    lanes.append(lane);
+    return lane;
+  };
+
+  const colour = { music: 'var(--music)', ambience: 'var(--amb)', sfx: 'var(--sfx)' };
+
+  if (proj.speech_ranges && proj.speech_ranges.length) {
+    const lane = addLane('dialogue');
+    for (const [a, b] of proj.speech_ranges) {
+      const block = document.createElement('div');
+      block.className = 'tl-speech';
+      block.style.left = `${x(a)}px`;
+      block.style.width = `${Math.max(x(b - a), 1)}px`;
+      lane.append(block);
+    }
+  }
+
+  if (!proj.cues) { paintPlayhead(); return; }
+
+  for (const kind of ['music', 'ambience']) {
+    for (const bed of proj.cues[kind] || []) {
+      const lane = addLane(kind);
+      lane.append(clipEl(bed, kind, colour[kind], x, 'bed'));
+    }
+  }
+
+  const sfxLanes = packLanes(proj.cues.sfx || []);
+  sfxLanes.forEach((group, i) => {
+    const lane = addLane(sfxLanes.length > 1 ? `fx ${i + 1}` : 'fx', 'sfx');
+    for (const cue of group) lane.append(clipEl(cue, 'sfx', colour.sfx, x, 'hit'));
+  });
+
+  const total = (proj.cues.sfx || []).length + (proj.cues.music || []).length
+    + (proj.cues.ambience || []).length;
+  $('#tlInfo').textContent =
+    `${total} cue${total === 1 ? '' : 's'} · ${sfxLanes.length} fx lane${sfxLanes.length === 1 ? '' : 's'}`;
+
+  paintPlayhead();
+}
+
+function clipEl(cue, kind, background, x, shape) {
+  const el = document.createElement('div');
+  el.className = `tl-clip ${shape}${cue.id === selectedCue ? ' sel' : ''}${cue.mute ? ' muted' : ''}`;
+  el.style.left = `${x(cueTime(cue))}px`;
+  el.style.width = `${Math.max(x(cueLen(cue)), 3)}px`;
+  el.style.background = background;
+  el.title = `${cue.id} — ${cue.prompt}`;
+  if (shape === 'bed') el.textContent = cue.id;
+
+  el.addEventListener('mousedown', e => {
+    e.stopPropagation();
+    selectCue(cue.id);
+    if (e.target.classList.contains('tl-grip')) return;   // trimming, handled below
+    dragClip(e, cue, el);
+  });
+
+  if (shape === 'bed') {
+    for (const side of ['l', 'r']) {
+      const grip = document.createElement('div');
+      grip.className = `tl-grip ${side}`;
+      grip.addEventListener('mousedown', e => { e.stopPropagation(); trimBed(e, cue, side); });
+      el.append(grip);
+    }
+  }
+  return el;
+}
+
+/* Drag a clip along its lane. The cue moves in time only - a sound belongs to the
+   moment it marks, and letting it change lane would mean changing what kind of cue it
+   is, which the schema treats as a different thing entirely. */
+function dragClip(e, cue, el) {
+  const startX = e.clientX;
+  const origin = cueTime(cue);
+  const length = cueLen(cue);
+  const dur = videoDuration();
+  el.classList.add('dragging');
+
+  const move = ev => {
+    let at = origin + (ev.clientX - startX) / pxPerSec;
+    if (!ev.altKey) at = snap(at);                        // hold Alt for free placement
+    at = Math.max(0, Math.min(at, Math.max(0, dur - 0.05)));
+    if (cue.at !== undefined) cue.at = +at.toFixed(3);
+    else { cue.start = +at.toFixed(3); cue.end = +Math.min(at + length, dur).toFixed(3); }
+    el.style.left = `${at * pxPerSec}px`;
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    el.classList.remove('dragging');
+    markDirty(); paintCues(); paintTimeline();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+function trimBed(e, bed, side) {
+  const startX = e.clientX;
+  const from = side === 'l' ? bed.start : bed.end;
+  const dur = videoDuration();
+  const move = ev => {
+    let v = from + (ev.clientX - startX) / pxPerSec;
+    if (!ev.altKey) v = snap(v);
+    if (side === 'l') bed.start = +Math.max(0, Math.min(v, bed.end - 1)).toFixed(3);
+    else bed.end = +Math.min(dur, Math.max(v, bed.start + 1)).toFixed(3);
+    paintTimeline();
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    markDirty(); paintCues();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+/* Snap to the things a sound should land on: a shot boundary, the edge of a speech gap,
+   or the playhead. Within about six pixels, so it helps at every zoom without fighting. */
+function snap(at) {
+  const tolerance = 6 / pxPerSec;
+  const targets = [$('#player').currentTime, ...(proj.shots || []).map(s => s.start)];
+  for (const [a, b] of proj.speech_ranges || []) targets.push(a, b);
+  let best = at, delta = tolerance;
+  for (const target of targets) {
+    if (Math.abs(target - at) < delta) { delta = Math.abs(target - at); best = target; }
+  }
+  return best;
+}
+
+function selectCue(id) {
+  selectedCue = id;
+  paintTimeline();
+  paintCues();
+  const card = document.querySelector(`.cue[data-id="${id}"]`);
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function paintPlayhead() {
+  const el = $('#playhead');
+  if (el) el.style.left = `${($('#player').currentTime || 0) * pxPerSec}px`;
+}
+
+function fitTimeline() {
+  const dur = videoDuration();
+  const room = $('#tlScroll').clientWidth - 16;
+  if (dur > 0 && room > 0) pxPerSec = Math.max(1, room / dur);
+  paintTimeline();
+}
+
+function zoomTimeline(factor) {
+  const scroll = $('#tlScroll');
+  const centre = (scroll.scrollLeft + scroll.clientWidth / 2) / pxPerSec;
+  pxPerSec = Math.min(400, Math.max(0.5, pxPerSec * factor));
+  paintTimeline();
+  scroll.scrollLeft = centre * pxPerSec - scroll.clientWidth / 2;
+}
+
+$('#tlIn').onclick = () => zoomTimeline(1.6);
+$('#tlOut').onclick = () => zoomTimeline(1 / 1.6);
+$('#tlFit').onclick = fitTimeline;
+$('#tlScroll').addEventListener('wheel', e => {
+  if (!e.ctrlKey) return;                     // Ctrl+wheel zooms, plain wheel scrolls
+  e.preventDefault();
+  zoomTimeline(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+}, { passive: false });
+
+$('#player').addEventListener('timeupdate', () => {
+  paintPlayhead();
+  const scroll = $('#tlScroll');
+  const at = $('#player').currentTime * pxPerSec;      // keep the playhead in view
+  if (at < scroll.scrollLeft || at > scroll.scrollLeft + scroll.clientWidth - 40) {
+    scroll.scrollLeft = at - scroll.clientWidth / 3;
+  }
 });
 
 /* -------------------------------------------------------------- cues */
@@ -887,7 +1139,9 @@ function engineOptions() {
 
 function cueCard(cue, kind) {
   const card = document.createElement('div');
-  card.className = 'cue' + (badCues.has(cue.id) ? ' bad' : '');
+  card.className = 'cue' + (badCues.has(cue.id) ? ' bad' : '')
+    + (cue.id === selectedCue ? ' sel' : '');
+  card.dataset.id = cue.id;
 
   const top = document.createElement('div');
   top.className = 'cue-top';
@@ -1247,7 +1501,25 @@ document.addEventListener('keydown', e => {
 
 window.addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
 
-loadLibrary().catch(err => say(err.message, 'danger'));
+/* Hash routing, so a project has a URL: refresh keeps you where you were, and Back
+   returns to the library instead of leaving the app. */
+function routeFromHash() {
+  const match = /^#\/p\/(.+)$/.exec(location.hash);
+  if (match) {
+    const name = decodeURIComponent(match[1]);
+    if (!proj || proj.name !== name) {
+      openProject(name, true).catch(() => showLibrary(true));
+    }
+  } else if (proj) {
+    showLibrary(true);
+  }
+}
+
+window.addEventListener('hashchange', routeFromHash);
+
+loadLibrary()
+  .then(routeFromHash)
+  .catch(err => say(err.message, 'danger'));
 </script>
 </body>
 </html>

@@ -580,3 +580,48 @@ class TestEditorAffordances:
         page = self._page()
         assert "$('#abWrap').lastChild.textContent" in page
         assert "$('#abWrap').firstChild.textContent = ''" not in page
+
+
+class TestTimeline:
+    """The multi-track timeline. Vanilla JS with no server side, so these are static
+    assertions on the page, the pattern used throughout this file."""
+
+    @staticmethod
+    def _page() -> str:
+        from hudka.ui.server import HERE
+
+        return (HERE / "index.html").read_text(encoding="utf-8")
+
+    def test_lanes_are_packed_so_overlapping_effects_stack(self):
+        page = self._page()
+        assert "function packLanes(" in page
+        assert "tl-lane" in page and "fx ${i + 1}" in page
+
+    def test_clips_can_be_dragged_and_beds_trimmed(self):
+        page = self._page()
+        assert "function dragClip(" in page and "function trimBed(" in page
+        assert "tl-grip" in page
+
+    def test_dragging_snaps_to_cuts_speech_edges_and_the_playhead(self):
+        page = self._page()
+        assert "function snap(" in page
+        assert "proj.speech_ranges" in page and "currentTime" in page
+        assert "ev.altKey" in page, "Alt should allow free placement"
+
+    def test_lane_labels_sit_outside_the_scrolling_tracks(self):
+        """Overlaid labels hid any clip starting at t=0 - where a music bed starts."""
+        page = self._page()
+        assert "tlnames" in page
+        assert ".tl-label {" not in page
+
+    def test_selecting_a_clip_selects_its_card(self):
+        page = self._page()
+        assert "function selectCue(" in page
+        assert "card.dataset.id = cue.id" in page
+
+    def test_a_project_has_a_url(self):
+        """Refreshing mid-edit used to drop you back to the library."""
+        page = self._page()
+        assert "function routeFromHash(" in page
+        assert "hashchange" in page
+        assert "#/p/" in page
