@@ -8,6 +8,7 @@ cue placement, loudness, provenance — which is where mistakes would otherwise 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -110,8 +111,10 @@ class TestPlacement:
         """`normalize=False` keeps the original meaning, for version-1 cue sheets."""
         from hudka.audio import write_wav
 
-        stem = write_wav(tmp_path / "s.wav",
-                         np.ones((SAMPLE_RATE, 2), dtype=np.float32) * 0.5)
+        # A tone, not a constant block: a constant is pure DC, and placement removes DC.
+        t = np.arange(SAMPLE_RATE) / SAMPLE_RATE
+        tone = (np.sin(2 * np.pi * 440 * t) * 0.5).astype(np.float32)
+        stem = write_wav(tmp_path / "s.wav", np.stack([tone, tone], axis=-1))
         cue = SfxCue(id="s", at=0.0, duration=1.0, prompt="tone",
                      engine="silence", gain_db=-6.0, align_transient=False)
         bus = mix.place_sfx([cue], {"s": stem}, total=2.0, normalize=False)
@@ -282,8 +285,9 @@ class TestMixBalance:
         """A NaN loudness reading must not propagate into the gain and zero the stem."""
         from hudka.audio import peak_dbfs, write_wav
 
-        clip = np.ones((SAMPLE_RATE, 2), dtype=np.float32) * 0.3
-        stem = write_wav(tmp_path / "bed.wav", clip)
+        t = np.arange(SAMPLE_RATE) / SAMPLE_RATE
+        tone = (np.sin(2 * np.pi * 220 * t) * 0.3).astype(np.float32)
+        stem = write_wav(tmp_path / "bed.wav", np.stack([tone, tone], axis=-1))
         monkeypatch.setattr(mix, "measured_lufs", lambda path: None)
 
         bed = BedCue(id="bed", start=0.0, end=1.0, prompt="a bed",
@@ -495,3 +499,169 @@ class TestPreviewIsUnmistakable:
         result = render.render(sheet_for(info), tmp_path)
         assert result.is_preview is False
         assert json.loads(result.provenance.read_text())["preview"] is False
+
+
+class TestQualityGateInRender:
+    """The gate is wired where it can act: on cached stems, on fresh stems, on the mix."""
+
+    @staticmethod
+    def _square(seconds: float) -> np.ndarray:
+        x = np.ones(int(seconds * SAMPLE_RATE), dtype=np.float32)
+        x[1::2] = -1.0
+        return np.stack([x, x], axis=-1)
+
+    def test_cached_saturated_stem_is_regenerated_not_reused(self, fixture_video, tmp_path):
+        """A cached file is not proof of a good file."""
+        from hudka.audio import write_wav
+
+        info = analyze_mod.probe(fixture_video)
+        sheet = sheet_for(info)
+        first = render.render(sheet, tmp_path)
+        victim = first.stems["hit1"]
+        write_wav(victim, self._square(1.0))          # poison the cache in place
+
+        log: list[str] = []
+        second = render.render(sheet, tmp_path, progress=log.append)
+
+        assert second.generated_count == 1, "only the poisoned stem should regenerate"
+        assert any("regenerating" in line and "hit1" in line for line in log)
+        from hudka import qa
+        assert not qa.measure_stem(victim, "hit1", "sfx").problems()
+
+    def test_fresh_saturated_stem_blocks_before_any_mix(self, fixture_video, tmp_path, monkeypatch):
+        from hudka import qa
+        from hudka.audio import write_wav
+
+        def poisoned_worker(engine_id, cues, device, say):
+            for item in cues:
+                write_wav(Path(item["dest"]), self._square(item["duration"]))
+        monkeypatch.setattr(render, "_run_worker", poisoned_worker)
+
+        info = analyze_mod.probe(fixture_video)
+        with pytest.raises(qa.QualityError) as exc:
+            render.render(sheet_for(info), tmp_path)
+        assert "hit1" in str(exc.value) and "re-roll" in str(exc.value).lower()
+        assert not (tmp_path / "final.mp4").exists()
+        assert not (tmp_path / "render_report.json").exists()
+
+    def test_render_report_is_written(self, fixture_video, tmp_path):
+        info = analyze_mod.probe(fixture_video)
+        sheet = sheet_for(info)
+        result = render.render(sheet, tmp_path)
+        report = json.loads((tmp_path / "render_report.json").read_text(encoding="utf-8"))
+        assert report["verdict"] in ("ok", "warn")
+        assert report["verdict"] == result.verdict
+        assert len(report["stems"]) == len(sheet.all_cues())
+        assert report["lufs"] == pytest.approx(result.measured_lufs, abs=0.01)
+
+    def test_short_unlooped_bed_warns_by_name(self, fixture_video, tmp_path):
+        """A 120s generation under a 182s range once left 62s of silence, silently."""
+        from hudka.audio import read_wav, write_wav
+
+        info = analyze_mod.probe(fixture_video)
+        sheet = sheet_for(info)
+        first = render.render(sheet, tmp_path)
+        bed = first.stems["bed"]
+        samples, _ = read_wav(bed)
+        write_wav(bed, samples[: samples.shape[0] // 3])   # now far shorter than its range
+
+        second = render.render(sheet, tmp_path)
+        assert second.verdict == "warn"
+        assert any("bed" in w and "covers" in w for w in second.quality.warnings())
+
+    def test_exit_codes_are_explained_not_all_blamed_on_vram(self):
+        text = render._explain_exit(0xC0000006, "")
+        assert "external" in text.lower() or "usb" in text.lower()
+        assert "vram" not in text.lower()
+        assert "ram" in render._explain_exit(-9 & 0xFFFFFFFF, "").lower()
+        assert "vram" in render._explain_exit(1, "CUDA out of memory").lower()
+
+    def test_worker_warning_lines_reach_the_log(self, monkeypatch, tmp_path):
+        """An engine's `warning:` on stderr used to be read only after a failed exit."""
+        import io
+
+        from hudka.engines.base import GenerateRequest
+        from hudka.engines.stub import SilenceEngine
+
+        class FakeStdin:
+            def __init__(self): self.buf, self.done = "", []
+            def write(self, s): self.buf += s
+            def close(self):
+                job = json.loads(self.buf)
+                for item in job["cues"]:
+                    SilenceEngine().generate(
+                        GenerateRequest(prompt=item["prompt"], duration=item["duration"],
+                                        seed=item["seed"]), Path(item["dest"]))
+                self.done = [item["id"] for item in job["cues"]]
+
+        class LazyLines:
+            """Iterable only when iterated - `_run_worker` truth-tests stdout before writing."""
+            def __init__(self, stdin): self.stdin = stdin
+            def __iter__(self):
+                return iter([json.dumps({"done": d}) + "\n" for d in self.stdin.done])
+
+        class FakeProc:
+            def __init__(self, *a, **k):
+                self.stdin = FakeStdin()
+                self.stdout = LazyLines(self.stdin)
+                self.stderr = io.StringIO("warning: test engine complained\n")
+                self.returncode = 0
+            def wait(self): return 0
+
+        monkeypatch.setattr(render.subprocess, "Popen", FakeProc)
+        log: list[str] = []
+        dest = tmp_path / "x.wav"
+        render._run_worker("silence", [{"id": "x", "prompt": "p", "duration": 1.0,
+                                        "seed": 1, "dest": str(dest), "video": None,
+                                        "window": [0, 1], "extra": {}}], None, log.append)
+        assert any("test engine complained" in line for line in log)
+
+
+class TestWorkerPipes:
+    """The worker's stderr must be drained while stdout is read, or it deadlocks.
+
+    Reproduced through a real OS pipe, not a fake: a child that writes well past any pipe
+    buffer to stderr before it finishes. Without a concurrent drain the child blocks on
+    the write, the parent blocks reading stdout, and the render never ends - which is
+    exactly what happened on a 36-cue project.
+    """
+
+    def test_a_chatty_worker_does_not_deadlock(self, monkeypatch, tmp_path):
+        import subprocess
+        import sys
+        import threading
+
+        dest = tmp_path / "x.wav"
+        # A child that floods stderr (2 MB, far beyond any pipe buffer), writes a valid
+        # WAV where the worker would, then reports the cue done on stdout.
+        script = (
+            "import sys, wave, json\n"
+            "sys.stderr.write('x' * 2_000_000); sys.stderr.flush()\n"
+            f"w = wave.open({str(dest)!r}, 'wb'); w.setnchannels(2); w.setsampwidth(2); "
+            "w.setframerate(44100); w.writeframes(bytes([0, 16]) * 88200); w.close()\n"
+            "print(json.dumps({'done': 'x'}), flush=True)\n"
+        )
+        real_popen = subprocess.Popen
+
+        def spawn(args, **kw):
+            return real_popen([sys.executable, "-c", script], **kw)
+        monkeypatch.setattr(render.subprocess, "Popen", spawn)
+
+        log: list[str] = []
+        outcome: dict = {}
+
+        def run():
+            try:
+                render._run_worker("silence", [{"id": "x", "prompt": "p", "duration": 1.0,
+                                                "seed": 1, "dest": str(dest), "video": None,
+                                                "window": [0, 1], "extra": {}}], None, log.append)
+                outcome["ok"] = True
+            except Exception as exc:  # pragma: no cover - surfaces in the assertion
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(timeout=60)
+        assert not worker.is_alive(), "worker deadlocked on a full stderr pipe"
+        assert outcome.get("ok"), outcome.get("error")
+        assert any("render  x" in line for line in log)

@@ -320,7 +320,8 @@ async function loadLibrary() {
     const card = document.createElement('div');
     card.className = 'card';
     const badge = p.busy ? 'busy' : p.stage;
-    const label = p.busy ? (p.job ? p.job.kind + 'ing…' : 'working…') : p.stage;
+    let label = p.busy ? (p.job ? p.job.kind + 'ing…' : 'working…') : p.stage;
+    if (!p.busy && p.stage === 'rendered' && p.verdict === 'warn') label = 'rendered · warnings';
     const meta = [];
     if (p.duration) meta.push(fmt(p.duration));
     if (p.width) meta.push(`${p.width}×${p.height}`);
@@ -504,6 +505,11 @@ function paintBanner() {
     host.innerHTML = `<div class="banner warn">
       <strong>Showing a preview.</strong> Placeholder tones, not real audio.
       Untick <em>preview</em> and press <strong>Render</strong> to generate sound.</div>`;
+    return;
+  }
+  if (proj.report && proj.report.verdict === 'warn' && proj.stage === 'rendered'
+      && (proj.report.warnings || []).length) {
+    showWarnings(proj.report.warnings);
     return;
   }
   const auth = lib.engine_auth || {};
@@ -693,9 +699,15 @@ function startPoll(jobId) {
           tones, not generated sound. Untick <em>preview</em> and press
           <strong>Render</strong> for real audio.</div>`;
       } else {
-        say(r.lufs !== undefined
+        const summary = r.lufs !== undefined
           ? `${r.lufs} LUFS · peak ${r.peak} dBTP · ${r.generated} new, ${r.cached} reused`
-          : 'done', r.on_target === false ? 'danger' : 'muted');
+          : 'done';
+        if (r.verdict === 'warn') {
+          say(summary + ' · rendered with warnings', 'danger');
+          showWarnings(r.warnings || []);
+        } else {
+          say(summary, r.on_target === false ? 'danger' : 'muted');
+        }
       }
       $('#player').dataset.src = '';
       await refresh();
@@ -720,6 +732,19 @@ function showError(title, detail) {
   $('#projBanner').innerHTML =
     `<div class="banner err"><strong>${escapeHtml(title)}</strong><br>${escapeHtml(detail)}</div>`;
   say(title.toLowerCase(), 'danger');
+}
+
+/* Quality warnings: things that are probably wrong but were not blocked. Each names a
+   cue, and the remedy - variations - already exists on every cue card. */
+function showWarnings(list) {
+  if (!list.length) return;
+  const rows = list.map(w => `<li>${escapeHtml(w)}</li>`).join('');
+  $('#projBanner').innerHTML = `<div class="banner warn">
+      <strong>Rendered, with ${list.length === 1 ? 'one warning' : list.length + ' warnings'}</strong>
+      <ul style="margin:7px 0 0 18px; padding:0">${rows}</ul>
+      <div class="tiny muted" style="margin-top:7px">Open a named cue and use
+      <em>try 4 variations</em>, or re-roll it, then render again.</div>
+    </div>`;
 }
 
 const escapeHtml = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));

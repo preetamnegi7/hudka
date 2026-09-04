@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,7 @@ from typing import Callable, Iterable
 
 import numpy as np
 
-from . import balance, engines, mix, presets
+from . import balance, engines, mix, presets, qa
 from .audio import write_wav
 from .engines.base import GenerateRequest, require_usable
 from .provenance import Ledger
@@ -47,6 +48,10 @@ class RenderResult:
     balance: "balance.Balance | None" = None
     #: Placeholder tones, no model. Named and reported differently at every layer.
     is_preview: bool = False
+    #: Content checks on every stem and on the finished mix. Level compliance alone once
+    #: let pure noise through with a green tick; this is what says whether it is sound.
+    quality: "qa.RenderQuality | None" = None
+    verdict: str = "ok"
 
 
 def _kind_of(cue: SfxCue | BedCue, sheet: CueSheet) -> str:
@@ -66,10 +71,18 @@ def generate_stems(
     opted_in: Iterable[str] = (),
     device: str | None = None,
     progress: Progress | None = None,
-) -> dict[str, Path]:
-    """Generate one WAV per cue, reusing cached stems where nothing changed."""
+) -> tuple[dict[str, Path], list[qa.StemQuality]]:
+    """Generate one WAV per cue, reusing cached stems where nothing changed.
+
+    Every stem is measured on the way out - cached ones included. A cached file is not
+    proof of a good file: thirteen saturated stems once matched their cache keys exactly
+    and would have been reused verbatim, because the fix that stopped the saturation
+    lived inside the engine rather than in the key. A cached stem that fails a blocking
+    check is deleted and regenerated with the same seed, which keeps provenance truthful.
+    """
     opted = set(opted_in)
     say = progress or (lambda _: None)
+    qualities: list[qa.StemQuality] = []
 
     cache_dir = out_dir / "stems"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -131,7 +144,19 @@ def generate_stems(
             key = req.cache_key(engine_id)
             dest = cache_dir / kind / f"{cue.id}_{key}.wav"
 
+            wanted = (cue.duration if isinstance(cue, BedCue) and not cue.loop else None)
             was_cached = dest.exists()
+            if was_cached:
+                check = qa.measure_stem(dest, cue.id, kind, wanted_s=wanted)
+                if check.problems():
+                    # Regenerating with the same seed is the one honest auto-retake: the
+                    # request is identical, only the engine has moved on.
+                    say(f"  cached stem for {cue.id} fails checks "
+                        f"({check.problems()[0].split(': ', 1)[-1]}); regenerating")
+                    dest.unlink()
+                    was_cached = False
+                else:
+                    qualities.append(check)
             if was_cached:
                 cached += 1
                 say(f"  cached  {cue.id}  {cue.prompt[:52]}")
@@ -155,6 +180,18 @@ def generate_stems(
         if pending:
             _run_worker(engine_id, pending, device, say)
             generated += len(pending)
+            for item in pending:
+                cue = next(c for c in cues if c.id == item["id"])
+                wanted = (cue.duration if isinstance(cue, BedCue) and not cue.loop else None)
+                qualities.append(qa.measure_stem(Path(item["dest"]), cue.id,
+                                                 _kind_of(cue, sheet), wanted_s=wanted))
+
+    # Fresh stems that fail a blocking check stop the render here, before any mixing:
+    # no final.mp4 is made from material that is silence or distortion.
+    failed = [q for q in qualities if q.problems()]
+    if failed:
+        raise qa.QualityError([p for q in failed for p in q.problems()],
+                              [q.cue_id for q in failed])
 
     # Stale stems from earlier renders would otherwise trip the provenance check, and
     # would quietly bloat the project directory.
@@ -164,7 +201,7 @@ def generate_stems(
             old.unlink()
 
     say(f"stems: {generated} generated, {cached} reused")
-    return stems
+    return stems, qualities
 
 
 #: Everything a preview writes lives under this subdirectory of the project.
@@ -205,8 +242,11 @@ def render(
     total = sheet.video.duration
     preset = presets.get(sheet.preset)
 
+    # A stale report behind a fresh failure would show the last render's green state.
+    (out_dir / "render_report.json").unlink(missing_ok=True)
+
     ledger = Ledger(video=str(video), preview=preview)
-    stems = generate_stems(
+    stems, qualities = generate_stems(
         sheet, out_dir, ledger,
         allow_noncommercial=allow_noncommercial, opted_in=opted_in,
         device=device, progress=progress,
@@ -282,6 +322,21 @@ def render(
     mastered = mix.normalize(raw, out_dir / "mix.wav", sheet.target_lufs, sheet.true_peak_db)
     lufs, peak = mix.integrated_lufs(mastered)
 
+    mix_samples, _ = mix.read_wav(mastered)
+    quality = qa.RenderQuality(
+        stems=qualities,
+        mix_lufs=lufs,
+        mix_flatness=qa.spectral_flatness(mix_samples),
+        sfx_events=report.sfx_events if report else None,
+        sfx_cues=len(sheet.sfx),
+        balance_problems=report.problems() if report else [],
+    )
+    if quality.problems():
+        # Mix-level blocks: a silent or unmeasurable master, or effects that never landed.
+        raise qa.QualityError(quality.problems(), [])
+    for line in quality.warnings():
+        say(f"  check: {line}")
+
     say("muxing")
     final = mix.mux(video, mastered, out_dir / ("preview.mp4" if preview else "final.mp4"))
 
@@ -289,13 +344,37 @@ def render(
     prov_json, prov_md = ledger.save(out_dir)
     raw.unlink(missing_ok=True)
 
+    _write_report(out_dir, quality, lufs, peak, report, preview)
+
     return RenderResult(
         final_video=final, mix_wav=mastered, provenance=prov_json, licence_report=prov_md,
         measured_lufs=lufs, measured_peak_db=peak, stems=stems, balance=report,
         cached_count=sum(1 for r in ledger.records if r.cached),
         generated_count=sum(1 for r in ledger.records if not r.cached),
-        is_preview=preview,
+        is_preview=preview, quality=quality, verdict=quality.verdict,
     )
+
+
+def _write_report(out_dir: Path, quality: qa.RenderQuality, lufs: float, peak: float,
+                  report: "balance.Balance | None", preview: bool) -> Path:
+    """The render's verdict, on disk, so the GUI can badge a project truthfully."""
+    from dataclasses import asdict
+
+    path = out_dir / "render_report.json"
+    path.write_text(json.dumps({
+        "verdict": quality.verdict,
+        "preview": preview,
+        "problems": quality.problems(),
+        "warnings": quality.warnings(),
+        "lufs": None if not np.isfinite(lufs) else round(float(lufs), 2),
+        "peak_dbtp": None if not np.isfinite(peak) else round(float(peak), 2),
+        "balance": {
+            "music_offset_db": report.music_offset_db, "sfx_offset_db": report.sfx_offset_db,
+            "sfx_events": report.sfx_events, "sfx_per_minute": round(report.sfx_per_minute, 1),
+        } if report else None,
+        "stems": [asdict(q) for q in quality.stems],
+    }, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def _run_worker(engine_id: str, cues: list[dict], device: str | None,
@@ -315,7 +394,17 @@ def _run_worker(engine_id: str, cues: list[dict], device: str | None,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace",
     )
-    assert proc.stdin and proc.stdout
+    assert proc.stdin and proc.stdout and proc.stderr
+
+    # Drain stderr on its own thread while stdout is read for progress. Reading stdout to
+    # EOF first and stderr afterwards is the textbook pipe deadlock, and it happened: each
+    # cue's tqdm bar goes to stderr, a 7-cue render never filled the pipe buffer, and a
+    # 36-cue render blocked the worker on a full pipe while the parent waited on stdout -
+    # 3.4 GB resident, 2% GPU, 15 seconds of CPU across half an hour.
+    captured: list[str] = []
+    drain = threading.Thread(target=lambda: captured.append(proc.stderr.read()), daemon=True)
+    drain.start()
+
     proc.stdin.write(payload)
     proc.stdin.close()
 
@@ -330,7 +419,13 @@ def _run_worker(engine_id: str, cues: list[dict], device: str | None,
         if cue_id in by_id:
             say(f"  render  {cue_id}  {by_id[cue_id]['prompt'][:52]}")
 
-    stderr = proc.stderr.read() if proc.stderr else ""
+    drain.join()
+    stderr = "".join(captured)
+    # Engines print `warning:` lines for things like saturated output. Those used to be
+    # read only when the exit code was non-zero - which is to say, never for a warning.
+    for line in stderr.splitlines():
+        if line.lower().startswith("warning:"):
+            say(f"  {line.strip()}")
     if proc.wait() != 0:
         raise RuntimeError(_worker_error(engine_id, proc.returncode, stderr))
 
@@ -342,15 +437,44 @@ def _run_worker(engine_id: str, cues: list[dict], device: str | None,
         )
 
 
+#: What a silent worker death usually means, by exit status. Blaming VRAM for all of
+#: them - as this used to - sent a user with weights on a USB drive to shrink models.
+_EXIT_MEANINGS = {
+    0xC0000006: ("STATUS_IN_PAGE_ERROR: a memory-mapped file could not be read. The model "
+                 "weights are almost certainly on an external, USB or exFAT drive. Move "
+                 "them to an internal SSD (set HUDKA_MODEL_DIR) and retry."),
+    0xC0000005: ("access violation inside the model process - usually a PyTorch/CUDA "
+                 "driver mismatch. Update the NVIDIA driver, or reinstall torch with "
+                 "Setup.bat."),
+    0xFFFFFFF7: ("killed (SIGKILL) - the machine ran out of system RAM while loading the "
+                 "model. Close other applications, or use the small engines."),
+    0xFFFFFFF5: ("segmentation fault inside the model process - usually a broken or "
+                 "mismatched torch build. Reinstall torch with Setup.bat."),
+}
+
+
+def _explain_exit(code: int, stderr: str) -> str:
+    """A cause a person can act on, from the exit status and whatever stderr holds."""
+    if "CUDA out of memory" in stderr or "OutOfMemoryError" in stderr:
+        return ("CUDA ran out of VRAM. Use the small engines - stable-audio-3-small-sfx "
+                "for effects, stable-audio-3-small-music for beds - which peak near 2 GB.")
+    normalised = code & 0xFFFFFFFF
+    if normalised in _EXIT_MEANINGS:
+        return _EXIT_MEANINGS[normalised]
+    if code in (137, 9):
+        return _EXIT_MEANINGS[0xFFFFFFF7]
+    if code in (139, 11):
+        return _EXIT_MEANINGS[0xFFFFFFF5]
+    return ("the model process died without raising. Check `hudka doctor`, and that the "
+            "model weights are on an internal drive.")
+
+
 def _worker_error(engine_id: str, code: int, stderr: str) -> str:
     """Explain a worker failure, including the crash case that prints no traceback."""
     if "Traceback" not in stderr:
         return (
             f"{engine_id} crashed while generating (exit code {code}).\n\n"
-            "The model process died without raising, which usually means too little VRAM "
-            "for this model.\n"
-            "Try a smaller engine: stable-audio-3-small-sfx for effects, "
-            "stable-audio-3-small-music for beds.\nBoth run comfortably in 12GB.\n\n"
+            f"{_explain_exit(code, stderr)}\n\n"
             f"{_tail(stderr)}"
         )
     return f"{engine_id} failed (exit code {code}):\n{_tail(stderr)}"

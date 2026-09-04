@@ -167,6 +167,23 @@ space, because the external backup disk usually has the most of it.
 released one is unreliable, and in the GUI a native crash would otherwise take the whole
 server down mid-render.
 
+**Drain the worker's stderr while reading its stdout.** Reading stdout to EOF and stderr
+afterwards is the textbook pipe deadlock, and it happened: each cue's progress bar goes
+to stderr, a 7-cue render never filled the pipe buffer, and a 36-cue render blocked the
+worker on a full pipe while the parent waited on stdout — 3.4 GB resident, 2% GPU,
+fifteen seconds of CPU across half an hour.
+
+**A placeholder must sound like a placeholder.** Preview mode once used filtered noise as
+its stand-in audio, named the result `final.mp4`, and reported "on target" in green. A
+user heard hiss where the music should be and concluded the generator was broken. The
+placeholder is now a metronome blip over a drone, previews live in their own directory
+and cannot be downloaded, and every surface says PREVIEW.
+
+**Level compliance is not content.** That same noise render mastered to exactly −14 LUFS
+and passed the balance check. `qa.py` now measures spectral flatness, crest factor,
+clipping, DC offset and silence on every stem — cached ones included, because thirteen
+saturated stems once matched their cache keys exactly and would have been reused.
+
 ---
 
 ## Command line
@@ -188,7 +205,7 @@ uv run hudka doctor              # check ffmpeg, engines, GPU
 uv run pytest
 ```
 
-135 tests, all offline — they run against a stub engine and an ffmpeg-generated fixture,
+181 tests, all offline — they run against a stub engine and an ffmpeg-generated fixture,
 so no weights or GPU are needed. They assert shot detection against known cuts,
 sample-accurate cue placement, loudness within tolerance, mix balance, cache reuse, and
 that the licence gate blocks restricted engines before any generation starts.

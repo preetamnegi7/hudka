@@ -111,9 +111,11 @@ def create_app(workspace: Path) -> FastAPI:
             stage = "imported"
 
         preview_file = project / render_mod.PREVIEW_DIR / "preview.mp4"
+        report = read_json(project / "render_report.json")
         return {
             "name": project.name,
             "stage": stage,
+            "verdict": report.get("verdict") if report else None,
             "has_preview": preview_file.exists(),
             "preview_at": preview_file.stat().st_mtime if preview_file.exists() else None,
             "busy": bool(active),
@@ -308,6 +310,10 @@ def create_app(workspace: Path) -> FastAPI:
                 "generated": result.generated_count,
                 "cached": result.cached_count,
                 "preview": result.is_preview,
+                # Content verdict. "on_target" alone is not a verdict: a render of pure
+                # noise once hit the loudness target exactly.
+                "verdict": result.verdict,
+                "warnings": result.quality.warnings() if result.quality else [],
             }
 
         return JSONResponse(runner.submit("render", name, work).as_dict())
@@ -386,6 +392,7 @@ def create_app(workspace: Path) -> FastAPI:
                 for d in (project / "takes").iterdir()
             } if (project / "takes").is_dir() else {},
             "stems": sorted(stem_index(project)),
+            "report": read_json(project / "render_report.json") or None,
             "provenance": read_json(project / "provenance.json").get("records", []),
             "job": active.as_dict() if active else None,
         })

@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import analyze as analyze_mod
-from . import design, engines, presets, render as render_mod
+from . import design, engines, presets, qa, render as render_mod
 from .schema import CueSheet
 
 app = typer.Typer(add_completion=False, help=__doc__, no_args_is_help=True)
@@ -143,12 +143,29 @@ def render(
     except engines.LicenceError as exc:
         console.print(f"\n[red]licence check failed[/]\n{exc}")
         raise typer.Exit(2)
+    except qa.QualityError as exc:
+        console.print(f"\n[red]quality checks failed[/]\n{exc}")
+        raise typer.Exit(3)
     except Exception as exc:
         console.print(f"[red]render failed:[/] {exc}")
         raise typer.Exit(1)
 
+    if result.is_preview:
+        console.print(
+            f"\n[yellow]PREVIEW[/] {result.final_video}\n"
+            "     placeholder tones only - no model ran, this is not real audio.\n"
+            "     Drop --preview to render for real."
+        )
+        return
+
+    if result.quality:
+        for line in result.quality.warnings():
+            console.print(f"[yellow]warning[/] {line}")
+
     off = abs(result.measured_lufs - sheet.target_lufs)
     verdict = "[green]on target[/]" if off <= 0.5 else f"[yellow]{off:.2f} LU off target[/]"
+    if result.verdict == "warn":
+        verdict += "  [yellow](with warnings above)[/]"
     console.print(
         f"\n[green]done[/] {result.final_video}\n"
         f"     {result.measured_lufs:.2f} LUFS  peak {result.measured_peak_db:.2f} dBTP  {verdict}\n"

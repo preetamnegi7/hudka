@@ -476,3 +476,18 @@ class TestPreviewThroughTheGui:
         assert "previewBanner" in page
         # The green success path must be unreachable for a preview result.
         assert "if (r.preview) {" in page
+
+
+class TestVerdictThroughTheGui:
+    def test_render_result_and_project_carry_the_verdict(self, client, project):
+        job = wait_for(client, client.post(f"/api/project/{project}/render", json={}).json()["id"])
+        assert job["result"]["verdict"] in ("ok", "warn")
+        assert isinstance(job["result"]["warnings"], list)
+
+        data = client.get(f"/api/project/{project}").json()
+        assert data["report"]["verdict"] == job["result"]["verdict"]
+        assert data["verdict"] == job["result"]["verdict"]
+
+        lib = client.get("/api/library").json()
+        mine = next(p for p in lib["projects"] if p["name"] == project)
+        assert mine["verdict"] == job["result"]["verdict"]

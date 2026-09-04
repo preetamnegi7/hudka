@@ -136,7 +136,9 @@ def place_sfx(cues: list[SfxCue], stems: dict[str, Path], total: float, *,
 
     for cue in cues:
         samples, _ = read_wav(stems[cue.id])
-        clip = _shaped(to_stereo(samples), cue)
+        clip = to_stereo(samples)
+        clip = clip - clip.mean(axis=0)   # a DC offset is a thump at every fade edge
+        clip = _shaped(clip, cue)
 
         if normalize:
             clip, _ = normalize_one_shot(clip)
@@ -168,6 +170,7 @@ def place_beds(beds: list[BedCue], stems: dict[str, Path], total: float, *,
         source = stems[bed.id]
         samples, _ = read_wav(source)
         clip = to_stereo(samples)
+        clip = clip - clip.mean(axis=0)
 
         norm_db = 0.0
         if normalize:
