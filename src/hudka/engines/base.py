@@ -65,12 +65,22 @@ class GenerateRequest:
     extra: dict = field(default_factory=dict)
 
     def cache_key(self, engine_id: str) -> str:
-        """Content hash so re-renders only regenerate what actually changed."""
+        """Content hash so re-renders only regenerate what actually changed.
+
+        Everything that reaches the model belongs here, `extra` included: steps, guidance
+        and the negative prompt all change the audio, and omitting them means a user
+        adjusts a setting, hears the cached stem, and concludes the control does nothing.
+
+        Tone controls are deliberately absent - they are applied at placement, so changing
+        a filter costs no generation at all.
+        """
         parts = [engine_id, self.prompt, f"{self.duration:.3f}", str(self.seed)]
         if self.video is not None:
             parts.append(Path(self.video).name)
         if self.window is not None:
             parts.append(f"{self.window[0]:.3f}-{self.window[1]:.3f}")
+        for key in sorted(self.extra):
+            parts.append(f"{key}={self.extra[key]}")
         return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:16]
 
 

@@ -367,3 +367,58 @@ class TestOfflineOperation:
         server._engine_auth()
         server._engine_auth()
         assert len(calls) <= 1, "the page reached out once per load instead of once per process"
+
+
+class TestSheetForwardCompatibility:
+    """A cue sheet written before a control existed must still drive that control.
+
+    The page binds inputs directly to cue fields. Serving the raw file means an older
+    sheet hands the UI `undefined` for every new field, and the controls silently do
+    nothing - so sheets are validated on the way out and filled with current defaults.
+    """
+
+    def test_older_sheet_is_served_with_current_defaults(self, client, project, tmp_path):
+        import json
+
+        from hudka.ui.server import create_app
+
+        cues = client.get(f"/api/project/{project}").json()["cues"]
+
+        # Strip every field added after the sheet format settled, as an old file would.
+        trimmed = dict(cues)
+        for key in ("music_bus_db", "sfx_bus_db", "ambience_bus_db", "duck_depth_db"):
+            trimmed.pop(key, None)
+        for cue in trimmed["sfx"]:
+            for key in ("highpass_hz", "lowpass_hz", "pitch_semitones", "reverse",
+                        "fade_in", "fade_out", "steps", "cfg_scale", "negative_prompt"):
+                cue.pop(key, None)
+
+        from fastapi.testclient import TestClient
+        import shutil
+
+        workspace = tmp_path / "ws"
+        (workspace / project).mkdir(parents=True)
+        (workspace / project / "cues.json").write_text(json.dumps(trimmed), encoding="utf-8")
+        old_client = TestClient(create_app(workspace))
+
+        served = old_client.get(f"/api/project/{project}").json()["cues"]
+        assert served["music_bus_db"] == 0.0
+        assert served["sfx"][0]["pitch_semitones"] == 0.0
+        assert served["sfx"][0]["reverse"] is False
+        assert served["sfx"][0]["steps"] is None
+
+    def test_unparseable_sheet_is_still_served(self, tmp_path):
+        import json
+
+        from fastapi.testclient import TestClient
+
+        from hudka.ui.server import create_app
+
+        workspace = tmp_path / "ws"
+        (workspace / "broken").mkdir(parents=True)
+        (workspace / "broken" / "cues.json").write_text(
+            json.dumps({"nonsense": True}), encoding="utf-8")
+
+        client = TestClient(create_app(workspace))
+        res = client.get("/api/project/broken")
+        assert res.status_code == 200, "a broken sheet must stay openable, not 500"

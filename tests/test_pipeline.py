@@ -322,3 +322,106 @@ class TestMixBalance:
 
         (tmp_path / "buses").mkdir(parents=True)
         assert balance_mod.measure(tmp_path) is None
+
+
+class TestShapingControls:
+    """Tone controls exist so a sound can be fixed rather than only re-rolled.
+
+    The design rule under test: shaping is level-neutral and costs no regeneration, while
+    anything reaching the model changes the cache key. If those two blur, the cheap knobs
+    stop being cheap and the levels stop meaning anything.
+    """
+
+    @staticmethod
+    def _tone_stem(tmp_path):
+        from hudka.audio import write_wav
+
+        t = np.arange(SAMPLE_RATE) / SAMPLE_RATE
+        both = (np.sin(2 * np.pi * 80 * t) * 0.4 + np.sin(2 * np.pi * 6000 * t) * 0.4)
+        return write_wav(tmp_path / "s.wav", np.stack([both] * 2, axis=-1).astype(np.float32))
+
+    @staticmethod
+    def _cue(**kw):
+        return SfxCue(**{"id": "s", "at": 0.0, "duration": 1.0, "prompt": "test tone",
+                         "engine": "silence", "gain_db": 0.0, "align_transient": False, **kw})
+
+    def test_filtering_does_not_change_the_level(self, tmp_path):
+        from hudka.audio import rms_dbfs
+
+        stem = self._tone_stem(tmp_path)
+        plain = mix.place_sfx([self._cue()], {"s": stem}, total=3.0)
+        filtered = mix.place_sfx([self._cue(highpass_hz=1000)], {"s": stem}, total=3.0)
+        assert rms_dbfs(filtered) == pytest.approx(rms_dbfs(plain), abs=1.0)
+
+    def test_highpass_actually_removes_the_low_end(self, tmp_path):
+        stem = self._tone_stem(tmp_path)
+        out = mix.place_sfx([self._cue(highpass_hz=1000)], {"s": stem}, total=3.0)
+        spectrum = np.abs(np.fft.rfft(out.mean(axis=1)))
+        freqs = np.fft.rfftfreq(len(out), 1 / SAMPLE_RATE)
+        low = spectrum[(freqs > 50) & (freqs < 200)].sum()
+        high = spectrum[(freqs > 5000) & (freqs < 7000)].sum()
+        assert low < high / 10
+
+    def test_reverse_flips_the_clip(self, tmp_path):
+        from hudka.audio import write_wav
+
+        clip = np.zeros((SAMPLE_RATE, 2), dtype=np.float32)
+        clip[:1000] = 0.5                                   # energy at the start
+        stem = write_wav(tmp_path / "r.wav", clip)
+        out = mix.place_sfx([self._cue(reverse=True)], {"s": stem}, total=2.0)
+        loud = np.flatnonzero(np.abs(out).mean(axis=1) > 0.05)
+        assert loud[0] / SAMPLE_RATE > 0.5, "energy should have moved to the end"
+
+    def test_pitch_down_lengthens_the_clip(self, tmp_path):
+        from hudka.audio import pitch_shift
+
+        clip = np.ones((SAMPLE_RATE, 2), dtype=np.float32) * 0.3
+        assert pitch_shift(clip, -12).shape[0] == pytest.approx(2 * SAMPLE_RATE, rel=0.01)
+
+    def test_tone_changes_do_not_invalidate_the_cache(self):
+        """Filtering is applied at placement, so it must not force a regeneration."""
+        from hudka.engines.base import GenerateRequest
+
+        req = GenerateRequest(prompt="a click", duration=2.0, seed=1)
+        assert req.cache_key("silence") == GenerateRequest(
+            prompt="a click", duration=2.0, seed=1
+        ).cache_key("silence")
+
+    def test_generation_options_do_invalidate_the_cache(self):
+        from hudka.engines.base import GenerateRequest
+
+        base = GenerateRequest(prompt="a click", duration=2.0, seed=1)
+        for extra in ({"steps": 25}, {"cfg_scale": 3.0}, {"negative_prompt": "reverb"}):
+            other = GenerateRequest(prompt="a click", duration=2.0, seed=1, extra=extra)
+            assert other.cache_key("silence") != base.cache_key("silence"), extra
+
+
+class TestBusAndTakes:
+    def test_bus_trim_shifts_the_whole_bus(self, tmp_path):
+        from hudka.audio import peak_dbfs, write_wav
+
+        clip = np.zeros((SAMPLE_RATE, 2), dtype=np.float32)
+        clip[:1000] = 0.4
+        stem = write_wav(tmp_path / "s.wav", clip)
+        cue = SfxCue(id="s", at=0.0, duration=1.0, prompt="hit",
+                     engine="silence", gain_db=0.0, align_transient=False)
+
+        flat = mix.place_sfx([cue], {"s": stem}, total=2.0)
+        trimmed = mix.place_sfx([cue], {"s": stem}, total=2.0, bus_offset_db=-6.0)
+        assert peak_dbfs(trimmed) == pytest.approx(peak_dbfs(flat) - 6.0, abs=0.3)
+
+    def test_take_seeds_are_deterministic_and_distinct(self):
+        from hudka.render import take_seeds
+
+        seeds = take_seeds(2001, 4)
+        assert len(set(seeds)) == 4
+        assert seeds == take_seeds(2001, 4)
+        assert 2001 not in seeds, "a take must differ from the cue's current seed"
+
+    def test_duck_override_beats_the_preset(self):
+        from hudka.schema import CueSheet, VideoInfo
+
+        sheet = CueSheet(video=VideoInfo(path="x.mp4", duration=10.0, fps=30.0),
+                         preset="explainer", duck_depth_db=-2.0)
+        assert sheet.duck_depth_db == -2.0
+        assert CueSheet(video=sheet.video, preset="explainer").duck_depth_db is None

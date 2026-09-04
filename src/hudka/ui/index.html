@@ -105,6 +105,21 @@
   .field label { font-size:10px; color:var(--faint); text-transform:uppercase; letter-spacing:.06em; }
   .field input,.field select { padding:4px 7px; font-size:12px; }
   .field input[type=number] { width:80px; }
+  details.adv { margin-top:9px; }
+  details.adv > summary { cursor:pointer; font-size:11px; color:var(--faint); list-style:none;
+    text-transform:uppercase; letter-spacing:.07em; user-select:none; }
+  details.adv > summary::-webkit-details-marker { display:none; }
+  details.adv > summary::before { content:'+ '; }
+  details.adv[open] > summary::before { content:'- '; }
+  details.adv > summary:hover { color:var(--dim); }
+  .advbody { padding:9px 0 2px; border-top:1px solid var(--line); margin-top:7px; }
+  .advlabel { font-size:10px; color:var(--faint); text-transform:uppercase;
+    letter-spacing:.07em; margin:8px 0 4px; }
+  .takes { display:flex; gap:6px; flex-wrap:wrap; margin-top:9px; }
+  .take { border:1px solid var(--line); border-radius:20px; padding:4px 11px; font-size:12px;
+    cursor:pointer; background:var(--raise); }
+  .take:hover { border-color:var(--faint); }
+  .take.on { border-color:var(--accent); color:var(--accent); }
   .note { font-size:11px; color:var(--faint); margin-top:6px; font-style:italic; }
 
   /* Log + banners */
@@ -196,6 +211,27 @@
             <select id="keepOriginal"><option value="true">yes</option><option value="false">no</option></select></div>
         </div>
         <div id="presetHint" class="tiny muted" style="margin-top:9px"></div>
+
+        <details class="adv" style="margin-top:12px">
+          <summary>Mix balance</summary>
+          <div class="advbody">
+            <div class="fields">
+              <div class="field"><label>music bus dB</label>
+                <input type="number" id="musicBus" step="1" min="-60" max="12"></div>
+              <div class="field"><label>effects bus dB</label>
+                <input type="number" id="sfxBus" step="1" min="-60" max="12"></div>
+              <div class="field"><label>ambience bus dB</label>
+                <input type="number" id="ambBus" step="1" min="-60" max="12"></div>
+              <div class="field"><label>duck depth dB</label>
+                <input type="number" id="duckDepth" step="1" min="-24" max="0"
+                       placeholder="preset"></div>
+            </div>
+            <div class="tiny muted" style="margin-top:7px">
+              Whole-bus trims, on top of each cue's own gain — the fastest way to rebalance
+              without touching cues. Leave duck empty to use the preset's.
+            </div>
+          </div>
+        </details>
 
         <div class="row wrap" style="margin-top:16px; gap:8px">
           <button class="primary" id="btnAct"></button>
@@ -519,7 +555,12 @@ function paintSettings() {
   if (has) {
     $('#lufs').value = proj.cues.target_lufs;
     $('#keepOriginal').value = String(proj.cues.keep_original_audio);
+    $('#musicBus').value = proj.cues.music_bus_db ?? 0;
+    $('#sfxBus').value = proj.cues.sfx_bus_db ?? 0;
+    $('#ambBus').value = proj.cues.ambience_bus_db ?? 0;
+    $('#duckDepth').value = proj.cues.duck_depth_db ?? '';
   }
+  $$('#musicBus,#sfxBus,#ambBus,#duckDepth').forEach(el => el.disabled = !has);
   if (!has) {
     const suggested = suggestPreset();
     if (suggested) $('#preset').value = suggested;
@@ -595,7 +636,8 @@ function startPoll(jobId) {
     try { job = await api(`/api/job/${jobId}`); }
     catch { stopPoll(); return; }
 
-    $('#jobLabel').textContent = job.kind === 'analyze' ? 'Analysing' : 'Rendering';
+    $('#jobLabel').textContent = { analyze: 'Analysing', render: 'Rendering',
+                                    variations: 'Making variations' }[job.kind] || job.kind;
     $('#jobTime').textContent = `${job.elapsed}s`;
     const log = $('#jobLog');
     log.textContent = job.log.join('\n');
@@ -771,12 +813,117 @@ function cueCard(cue, kind) {
   fields.append(field('engine', cue.engine, { tag: 'select', options: engineOptions() },
     v => { cue.engine = v; }));
 
-  card.append(top, prompt, fields);
+  // Advanced: tone is free to change, generation costs a regeneration. Grouped and
+  // labelled so that distinction is visible rather than something you learn by surprise.
+  const adv = document.createElement('details');
+  adv.className = 'adv';
+  adv.innerHTML = '<summary>shape &amp; generate</summary>';
+  const body = document.createElement('div');
+  body.className = 'advbody';
+
+  const toneLabel = document.createElement('div');
+  toneLabel.className = 'advlabel';
+  toneLabel.textContent = 'tone — free to change, no regeneration';
+  const tone = document.createElement('div');
+  tone.className = 'fields';
+  tone.append(
+    field('high-pass Hz', cue.highpass_hz ?? '', { type: 'number', step: 10, min: 20, max: 20000, placeholder: 'off' },
+      v => { cue.highpass_hz = v === '' ? null : parseFloat(v); }),
+    field('low-pass Hz', cue.lowpass_hz ?? '', { type: 'number', step: 100, min: 20, max: 20000, placeholder: 'off' },
+      v => { cue.lowpass_hz = v === '' ? null : parseFloat(v); }),
+    field('pitch st', cue.pitch_semitones ?? 0, { type: 'number', step: 1, min: -24, max: 24 },
+      v => { cue.pitch_semitones = parseFloat(v) || 0; }),
+    field('reverse', String(cue.reverse), { tag: 'select', options: ['false', 'true'] },
+      v => { cue.reverse = v === 'true'; }),
+  );
+  if (kind === 'sfx') {
+    tone.append(
+      field('fade in', cue.fade_in ?? 0, { type: 'number', step: 0.05, min: 0 },
+        v => { cue.fade_in = parseFloat(v) || 0; }),
+      field('fade out', cue.fade_out ?? 0, { type: 'number', step: 0.05, min: 0 },
+        v => { cue.fade_out = parseFloat(v) || 0; }),
+    );
+  }
+
+  const genLabel = document.createElement('div');
+  genLabel.className = 'advlabel';
+  genLabel.textContent = 'generation — changing these regenerates the sound';
+  const gen = document.createElement('div');
+  gen.className = 'fields';
+  gen.append(
+    field('steps', cue.steps ?? '', { type: 'number', step: 1, min: 1, max: 200, placeholder: 'auto' },
+      v => { cue.steps = v === '' ? null : parseInt(v, 10); }),
+    field('guidance', cue.cfg_scale ?? '', { type: 'number', step: 0.5, min: 0, max: 15, placeholder: 'auto' },
+      v => { cue.cfg_scale = v === '' ? null : parseFloat(v); }),
+    field('seed', cue.seed, { type: 'number', step: 1, min: 0 },
+      v => { cue.seed = parseInt(v, 10) || 0; }),
+  );
+
+  const neg = document.createElement('textarea');
+  neg.value = cue.negative_prompt || '';
+  neg.placeholder = 'avoid… e.g. reverb, music, voices';
+  neg.style.minHeight = '34px';
+  neg.style.marginTop = '8px';
+  neg.addEventListener('input', () => { cue.negative_prompt = neg.value; markDirty(); });
+
+  const takesRow = document.createElement('div');
+  takesRow.className = 'takes';
+  takesRow.dataset.for = cue.id;
+  renderTakes(takesRow, cue);
+
+  body.append(toneLabel, tone, genLabel, gen, neg, takesRow);
+  adv.append(body);
+  card.append(top, prompt, fields, adv);
+
   if (cue.note) {
     const n = document.createElement('div'); n.className = 'note'; n.textContent = cue.note;
     card.append(n);
   }
   return card;
+}
+
+/* Alternative takes. Re-rolling a seed and re-rendering to hear the result is a slow way
+   to ask "is there a better one?" - generating several and auditioning them makes it a
+   listening decision. Adopting one simply records its seed on the cue. */
+function renderTakes(host, cue) {
+  host.innerHTML = '';
+  const seeds = (proj.takes || {})[cue.id] || [];
+
+  const make = document.createElement('button');
+  make.className = 'sm ghost';
+  make.textContent = seeds.length ? '↻ more takes' : '✦ try 4 variations';
+  make.title = 'Generate alternatives and pick one by ear';
+  make.disabled = !!(proj.job && ['queued', 'running'].includes(proj.job.status));
+  make.onclick = () => requestTakes(cue.id);
+  host.append(make);
+
+  for (const seed of seeds) {
+    const chip = document.createElement('button');
+    chip.className = 'take' + (seed === cue.seed ? ' on' : '');
+    chip.textContent = seed === cue.seed ? '▶ in use' : '▶ ' + seed;
+    chip.title = seed === cue.seed ? 'This take is selected' : 'Play, then click again to use it';
+    chip.onclick = () => {
+      new Audio(`/media/${proj.name}/take/${cue.id}/${seed}`).play();
+      if (cue.seed !== seed) {
+        cue.seed = seed;
+        markDirty();
+        renderTakes(host, cue);
+        say('take adopted — render to hear it in the mix', 'muted');
+      }
+    };
+    host.append(chip);
+  }
+}
+
+async function requestTakes(cueId) {
+  if (dirty && !(await saveCues())) return;
+  try {
+    const job = await api(`/api/project/${proj.name}/variations`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cue_id: cueId, count: 4 }),
+    });
+    startPoll(job.id);
+  } catch (err) { showError('Cannot make variations', err.message); }
 }
 
 function paintCues() {
@@ -863,16 +1010,24 @@ $$('[data-add]').forEach(btn => {
   };
 });
 
-['preset', 'lufs', 'keepOriginal'].forEach(id => {
-  $(`#${id}`).addEventListener('change', () => {
-    if (!proj.cues) return;
-    proj.cues.preset = $('#preset').value;
-    proj.cues.target_lufs = parseFloat($('#lufs').value);
-    proj.cues.keep_original_audio = $('#keepOriginal').value === 'true';
-    $('#presetHint').textContent = lib.presets[$('#preset').value].guidance;
-    markDirty();
+const numOrNull = v => (v === '' || v === null ? null : parseFloat(v));
+
+['preset', 'lufs', 'keepOriginal', 'musicBus', 'sfxBus', 'ambBus', 'duckDepth']
+  .forEach(id => {
+    $(`#${id}`).addEventListener('change', () => {
+      if (!proj.cues) return;
+      proj.cues.preset = $('#preset').value;
+      proj.cues.target_lufs = parseFloat($('#lufs').value);
+      proj.cues.keep_original_audio = $('#keepOriginal').value === 'true';
+      proj.cues.music_bus_db = parseFloat($('#musicBus').value) || 0;
+      proj.cues.sfx_bus_db = parseFloat($('#sfxBus').value) || 0;
+      proj.cues.ambience_bus_db = parseFloat($('#ambBus').value) || 0;
+      proj.cues.duck_depth_db = numOrNull($('#duckDepth').value);
+      $('#presetHint').innerHTML = (shapeNote() ? `<em>${shapeNote()}</em><br>` : '')
+        + lib.presets[$('#preset').value].guidance;
+      markDirty();
+    });
   });
-});
 
 async function saveCues() {
   try {

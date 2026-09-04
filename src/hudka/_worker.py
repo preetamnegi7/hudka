@@ -37,6 +37,7 @@ def main() -> int:
             seed=item["seed"],
             video=Path(item["video"]) if item.get("video") else None,
             window=tuple(item["window"]) if item.get("window") else None,
+            extra=item.get("extra") or {},
         )
         engine.generate(req, Path(item["dest"]))
         # One line per finished cue, so the parent can report progress live.

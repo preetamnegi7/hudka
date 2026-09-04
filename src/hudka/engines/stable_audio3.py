@@ -177,12 +177,18 @@ class StableAudio3Engine(Engine):
         generate_for = max(duration, MIN_RELIABLE_SECONDS)
 
         model = self._load()
-        audio = model.generate(
-            prompt=req.prompt,
-            duration=generate_for,
-            steps=req.extra.get("steps", self._effective_steps()),
-            seed=req.seed,
-        )
+        options = {
+            "prompt": req.prompt,
+            "duration": generate_for,
+            "steps": req.extra.get("steps") or self._effective_steps(),
+            "seed": req.seed,
+        }
+        if req.extra.get("cfg_scale") is not None:
+            options["cfg_scale"] = float(req.extra["cfg_scale"])
+        if req.extra.get("negative_prompt"):
+            options["negative_prompt"] = req.extra["negative_prompt"]
+
+        audio = model.generate(**options)
         if hasattr(audio, "detach"):
             # Comes back as a batch; take the first item and hand numpy a plain array.
             audio = audio.detach().float().cpu()

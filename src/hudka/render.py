@@ -108,12 +108,23 @@ def generate_stems(
             window = ((cue.start, cue.end) if isinstance(cue, BedCue)
                       else (cue.at, cue.at + cue.duration))
 
+            # Only non-default generation options enter `extra`, so a sheet that sets
+            # none of them keeps the cache keys it already had.
+            extra = {}
+            if cue.steps is not None:
+                extra["steps"] = cue.steps
+            if cue.cfg_scale is not None:
+                extra["cfg_scale"] = cue.cfg_scale
+            if cue.negative_prompt:
+                extra["negative_prompt"] = cue.negative_prompt
+
             req = GenerateRequest(
                 prompt=cue.prompt,
                 duration=duration,
                 seed=cue.seed,
                 video=video_path if engine_id == "hunyuan-foley" else None,
                 window=window,
+                extra=extra,
             )
             key = req.cache_key(engine_id)
             dest = cache_dir / kind / f"{cue.id}_{key}.wav"
@@ -129,6 +140,7 @@ def generate_stems(
                     "seed": cue.seed, "dest": str(dest),
                     "video": str(video_path) if engine_id == "hunyuan-foley" else None,
                     "window": list(window),
+                    "extra": extra,
                 })
 
             stems[cue.id] = dest
@@ -207,21 +219,24 @@ def render(
     if sheet.music:
         bus_paths["music"] = write_wav(
             buses / "music.wav",
-            mix.place_beds(sheet.music, stems, total, bus_offset_db=anchor_db,
+            mix.place_beds(sheet.music, stems, total,
+                           bus_offset_db=anchor_db + sheet.music_bus_db,
                            normalize=sheet.normalizes_stems),
             subtype="FLOAT",
         )
     if sheet.ambience:
         bus_paths["ambience"] = write_wav(
             buses / "ambience.wav",
-            mix.place_beds(sheet.ambience, stems, total, bus_offset_db=anchor_db,
+            mix.place_beds(sheet.ambience, stems, total,
+                           bus_offset_db=anchor_db + sheet.ambience_bus_db,
                            normalize=sheet.normalizes_stems),
             subtype="FLOAT",
         )
     if sheet.sfx:
         bus_paths["sfx"] = write_wav(
             buses / "sfx.wav",
-            mix.place_sfx(sheet.sfx, stems, total, bus_offset_db=anchor_db,
+            mix.place_sfx(sheet.sfx, stems, total,
+                          bus_offset_db=anchor_db + sheet.sfx_bus_db,
                           normalize=sheet.normalizes_stems),
             subtype="FLOAT",
         )
@@ -235,7 +250,9 @@ def render(
     raw = mix.mixdown(
         music=bus_paths["music"], sfx=bus_paths["sfx"], ambience=bus_paths["ambience"],
         dialogue=dialogue, dest=out_dir / "mix_raw.wav",
-        duck_depth_db=preset.duck_depth_db, original_gain_db=sheet.original_gain_db,
+        duck_depth_db=(sheet.duck_depth_db if sheet.duck_depth_db is not None
+                       else preset.duck_depth_db),
+        original_gain_db=sheet.original_gain_db,
         key_ref_lufs=key_ref_lufs,
     )
 
@@ -319,3 +336,73 @@ def _worker_error(engine_id: str, code: int, stderr: str) -> str:
 def _tail(text: str, lines: int = 12) -> str:
     kept = [ln for ln in text.strip().splitlines() if ln.strip()]
     return "\n".join(kept[-lines:])
+
+
+#: Seeds for alternative takes are derived from the cue's own seed by a fixed stride, so
+#: the same cue always offers the same set of alternatives and any one of them can be
+#: adopted permanently just by recording its seed.
+TAKE_SEED_STRIDE = 7919
+
+
+def take_seeds(base_seed: int, count: int) -> list[int]:
+    return [(base_seed + (i + 1) * TAKE_SEED_STRIDE) % 2_147_483_647 for i in range(count)]
+
+
+def generate_variations(
+    sheet: CueSheet,
+    out_dir: Path,
+    cue_id: str,
+    *,
+    count: int = 4,
+    device: str | None = None,
+    progress: Progress | None = None,
+) -> list[dict]:
+    """Render several alternative takes of one cue, for the user to choose between.
+
+    Re-rolling a seed and re-rendering the whole mix to hear the result is a slow way to
+    ask "is there a better one?". Generating a handful at once and auditioning them makes
+    that a listening decision instead of a guessing one.
+
+    Takes live outside `stems/` deliberately: they are candidates, not part of the render,
+    and the provenance check would rightly object to untracked audio in the stem tree.
+    """
+    say = progress or (lambda _: None)
+    cue = next((c for c in sheet.all_cues() if c.id == cue_id), None)
+    if cue is None:
+        raise ValueError(f"no cue {cue_id!r} in this sheet")
+
+    engine = engines.build(cue.engine, device)
+    require_usable(engine, allow_noncommercial=False, opted_in=set())
+    preflight = getattr(engine, "preflight", None)
+    if callable(preflight):
+        preflight()
+
+    takes_dir = out_dir / "takes" / cue_id
+    takes_dir.mkdir(parents=True, exist_ok=True)
+
+    extra = {}
+    if cue.steps is not None:
+        extra["steps"] = cue.steps
+    if cue.cfg_scale is not None:
+        extra["cfg_scale"] = cue.cfg_scale
+    if cue.negative_prompt:
+        extra["negative_prompt"] = cue.negative_prompt
+
+    duration = cue.duration
+    pending, results = [], []
+    for seed in take_seeds(cue.seed, count):
+        dest = takes_dir / f"{seed}.wav"
+        results.append({"seed": seed, "file": dest.name, "cached": dest.exists()})
+        if not dest.exists():
+            pending.append({
+                "id": f"{cue_id}@{seed}", "prompt": cue.prompt, "duration": duration,
+                "seed": seed, "dest": str(dest), "video": None,
+                "window": [0.0, duration], "extra": extra,
+            })
+
+    if pending:
+        say(f"{cue.engine}: {len(pending)} variation(s) of {cue_id}")
+        _run_worker(cue.engine, pending, device, say)
+
+    say(f"{count} take(s) ready for {cue_id}")
+    return results

@@ -169,3 +169,75 @@ def normalize_one_shot(
     gain = min(peak_target_dbfs - peak, rms_ceiling_dbfs - rms)
     gain = float(np.clip(gain, clamp_db[0], clamp_db[1]))
     return audio * db_to_gain(gain), gain
+
+
+# ------------------------------------------------------------------- tone shaping
+
+def shape(
+    samples: np.ndarray,
+    sr: int = SAMPLE_RATE,
+    *,
+    highpass_hz: float | None = None,
+    lowpass_hz: float | None = None,
+    order: int = 2,
+) -> np.ndarray:
+    """Butterworth-response high/low pass, applied in the frequency domain.
+
+    Filtering is what makes a generated sound *sit* somewhere. A boomy effect competing
+    with a voice usually needs its bottom removed rather than its level dropped, and a
+    harsh one needs its top rolled off - both leave the sound recognisable where turning
+    it down just makes it quiet and still wrong.
+
+    FFT rather than a biquad because these clips are short and a Python IIR loop over two
+    million samples is slow enough to be felt in the UI.
+    """
+    if not highpass_hz and not lowpass_hz:
+        return samples
+
+    audio = to_stereo(samples)
+    n = audio.shape[0]
+    if n < 8:
+        return audio
+
+    spectrum = np.fft.rfft(audio, axis=0)
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    gain = np.ones_like(freqs)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if highpass_hz and highpass_hz > 0:
+            ratio = np.divide(highpass_hz, freqs, out=np.full_like(freqs, np.inf),
+                              where=freqs > 0)
+            gain *= 1.0 / np.sqrt(1.0 + ratio ** (2 * order))
+            gain[freqs == 0] = 0.0
+        if lowpass_hz and lowpass_hz > 0:
+            gain *= 1.0 / np.sqrt(1.0 + (freqs / lowpass_hz) ** (2 * order))
+
+    return np.fft.irfft(spectrum * gain[:, None], n=n, axis=0).astype(np.float32)
+
+
+def pitch_shift(samples: np.ndarray, semitones: float) -> np.ndarray:
+    """Varispeed: resample so the sound changes pitch and length together.
+
+    Deliberately not pitch-preserving. Slowing a sound down *and* dropping it is how a
+    small click becomes a heavy thunk, and that tape-style behaviour is more useful on
+    one-shots than a formant-correct shift would be.
+    """
+    if abs(semitones) < 1e-6:
+        return to_stereo(samples)
+
+    audio = to_stereo(samples)
+    rate = 2.0 ** (semitones / 12.0)
+    src_len = audio.shape[0]
+    out_len = max(8, int(round(src_len / rate)))
+
+    positions = np.linspace(0.0, src_len - 1, out_len)
+    index = np.arange(src_len, dtype=np.float64)
+    return np.stack(
+        [np.interp(positions, index, audio[:, ch]) for ch in range(audio.shape[1])],
+        axis=-1,
+    ).astype(np.float32)
+
+
+def reverse(samples: np.ndarray) -> np.ndarray:
+    """Play the clip backwards. Turns a decay into a swell, which is how risers are made."""
+    return to_stereo(samples)[::-1].copy()

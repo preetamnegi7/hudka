@@ -20,6 +20,10 @@ import numpy as np
 from .audio import (
     SAMPLE_RATE,
     db_to_gain,
+    pitch_shift,
+    reverse as reverse_audio,
+    rms_dbfs,
+    shape,
     find_onset,
     fit_length,
     loop_to_length,
@@ -98,6 +102,29 @@ def _add_at(bus: np.ndarray, clip: np.ndarray, at_samples: int) -> None:
     bus[start : start + length] += clip[clip_start : clip_start + length]
 
 
+def _shaped(clip: np.ndarray, cue) -> np.ndarray:
+    """Apply a cue's tone controls, keeping the result level-neutral.
+
+    Filtering removes energy, so a high-pass would otherwise quietly turn a cue down as
+    well as thinning it - and the user would reach for the gain to compensate, undoing
+    the point of normalised levels. Measuring either side and adding the difference back
+    keeps "how it sounds" and "how loud it is" as separate controls.
+    """
+    if cue.reverse:
+        clip = reverse_audio(clip)
+    if cue.pitch_semitones:
+        clip = pitch_shift(clip, cue.pitch_semitones)
+
+    if cue.highpass_hz or cue.lowpass_hz:
+        before = rms_dbfs(clip)
+        clip = shape(clip, SAMPLE_RATE,
+                     highpass_hz=cue.highpass_hz, lowpass_hz=cue.lowpass_hz)
+        after = rms_dbfs(clip)
+        if np.isfinite(before) and np.isfinite(after) and after > -110:
+            clip = clip * db_to_gain(min(before - after, 24.0))
+    return clip
+
+
 def place_sfx(cues: list[SfxCue], stems: dict[str, Path], total: float, *,
               bus_offset_db: float = 0.0, normalize: bool = True) -> np.ndarray:
     """Sum every one-shot into a single SFX bus.
@@ -109,7 +136,7 @@ def place_sfx(cues: list[SfxCue], stems: dict[str, Path], total: float, *,
 
     for cue in cues:
         samples, _ = read_wav(stems[cue.id])
-        clip = to_stereo(samples)
+        clip = _shaped(to_stereo(samples), cue)
 
         if normalize:
             clip, _ = normalize_one_shot(clip)
@@ -119,7 +146,8 @@ def place_sfx(cues: list[SfxCue], stems: dict[str, Path], total: float, *,
         offset = find_onset(clip) if cue.align_transient else 0.0
         at = cue.at - offset
 
-        clip = _apply_fades(clip, 0.0, min(0.02, cue.duration / 4))  # tiny tail, avoids clicks
+        # A tiny tail fade always, to avoid a click; the cue's own fades on top of it.
+        clip = _apply_fades(clip, cue.fade_in, max(cue.fade_out, min(0.02, cue.duration / 4)))
         clip = _apply_pan(clip, cue.pan) * db_to_gain(cue.gain_db + bus_offset_db)
         _add_at(bus, clip, int(round(at * SAMPLE_RATE)))
 
@@ -146,6 +174,8 @@ def place_beds(beds: list[BedCue], stems: dict[str, Path], total: float, *,
             lufs = measured_lufs(source)
             if lufs is not None:
                 norm_db = float(np.clip(reference_lufs - lufs, -24.0, 18.0))
+
+        clip = _shaped(clip, bed)
 
         clip = (loop_to_length(clip, bed.duration) if bed.loop
                 else fit_length(clip, bed.duration))

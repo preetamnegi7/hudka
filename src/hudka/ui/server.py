@@ -42,6 +42,11 @@ class RenderOptions(BaseModel):
     preview: bool = False
 
 
+class VariationOptions(BaseModel):
+    cue_id: str
+    count: int = 4
+
+
 class ScaffoldOptions(BaseModel):
     #: None means "let the designer choose from the video" - a concrete default here
     #: silently overrides that, which is how a narration-heavy clip ended up short-form.
@@ -73,9 +78,16 @@ def create_app(workspace: Path) -> FastAPI:
     def source_video(project: Path) -> Path | None:
         cues = project / "cues.json"
         if cues.exists():
-            path = Path(json.loads(cues.read_text(encoding="utf-8"))["video"]["path"])
-            if path.exists():
-                return path
+            # A hand-edited or truncated sheet must not make the project unopenable -
+            # that would leave a text editor as the only way to repair it.
+            try:
+                recorded = json.loads(cues.read_text(encoding="utf-8"))["video"]["path"]
+            except (json.JSONDecodeError, KeyError, TypeError, OSError):
+                recorded = None
+            if recorded:
+                path = Path(recorded)
+                if path.exists():
+                    return path
         found = sorted(p for p in (project / "source").glob("*") if p.suffix.lower() in VIDEO_SUFFIXES)
         return found[0] if found else None
 
@@ -302,6 +314,34 @@ def create_app(workspace: Path) -> FastAPI:
 
         return JSONResponse(runner.submit("render", name, work).as_dict())
 
+    @app.post("/api/project/{name}/variations")
+    def api_variations(name: str, opts: VariationOptions) -> JSONResponse:
+        """Render alternative takes of one cue, so the choice can be made by ear."""
+        project = project_dir(name)
+        if runner.active_for(name):
+            raise HTTPException(status_code=409, detail="already working on this project")
+        if not (project / "cues.json").exists():
+            raise HTTPException(status_code=409, detail="there is no cue sheet yet")
+
+        sheet = CueSheet.load(project / "cues.json")
+        count = max(2, min(opts.count, 8))
+
+        def work(say):
+            takes = render_mod.generate_variations(
+                sheet, project, opts.cue_id, count=count, progress=say,
+            )
+            return {"cue": opts.cue_id, "takes": takes}
+
+        return JSONResponse(runner.submit("variations", name, work).as_dict())
+
+    @app.get("/media/{name}/take/{cue_id}/{seed}")
+    def media_take(name: str, cue_id: str, seed: str) -> FileResponse:
+        takes_dir = (project_dir(name) / "takes" / cue_id).resolve()
+        target = (takes_dir / f"{seed}.wav").resolve()
+        if not target.is_file() or takes_dir not in target.parents:
+            raise HTTPException(status_code=404, detail="no such take")
+        return FileResponse(target, media_type="audio/wav")
+
     @app.get("/api/job/{job_id}")
     def api_job(job_id: str) -> JSONResponse:
         job = runner.get(job_id)
@@ -315,12 +355,24 @@ def create_app(workspace: Path) -> FastAPI:
     def api_project(name: str) -> JSONResponse:
         project = project_dir(name)
         analysis = read_json(project / "analysis.json")
-        cues = read_json(project / "cues.json")
         active = runner.active_for(name)
+
+        # Validate on the way out rather than serving the raw file. A sheet written before
+        # a field existed simply omits it, and the page would then bind controls to
+        # undefined - so every cue sheet is filled out with current defaults first.
+        cues = None
+        cues_path = project / "cues.json"
+        if cues_path.exists():
+            try:
+                cues = CueSheet.load(cues_path).model_dump(mode="json")
+            except Exception:
+                # A hand-edited sheet that no longer validates still has to be openable,
+                # or the only way to fix it is a text editor.
+                cues = read_json(cues_path)
 
         return JSONResponse({
             **summarise(project),
-            "cues": cues or None,
+            "cues": cues,
             "shots": analysis.get("shots", []),
             "speech_ranges": analysis.get("speech_ranges", []),
             "contact_sheets": analysis.get("contact_sheets", []),
@@ -331,6 +383,10 @@ def create_app(workspace: Path) -> FastAPI:
             "speech_coverage": round(
                 design.speech_coverage(analysis, analysis.get("video", {}).get("duration", 0)), 3
             ) if analysis else 0.0,
+            "takes": {
+                d.name: sorted(int(f.stem) for f in d.glob("*.wav") if f.stem.isdigit())
+                for d in (project / "takes").iterdir()
+            } if (project / "takes").is_dir() else {},
             "stems": sorted(stem_index(project)),
             "provenance": read_json(project / "provenance.json").get("records", []),
             "job": active.as_dict() if active else None,

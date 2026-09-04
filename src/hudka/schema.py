@@ -47,7 +47,37 @@ class VideoInfo(BaseModel):
     has_dialogue: bool = False
 
 
-class SfxCue(BaseModel):
+class Shaping(BaseModel):
+    """Controls shared by every cue.
+
+    The split matters. **Generation** fields feed the model, so changing one regenerates
+    that stem. **Shaping** fields are applied when the cue is placed into the mix, so they
+    are free to adjust - retune a filter, re-render, and nothing is generated at all.
+
+    That is deliberate: the parameters you will fiddle with most are the cheap ones.
+    """
+
+    # --- generation: changing these costs a regeneration -------------------------
+    #: Diffusion steps. None means the engine decides (more steps, richer, slower).
+    steps: Annotated[int, Field(ge=1, le=200)] | None = None
+    #: Prompt adherence. None means the engine default. These checkpoints are distilled
+    #: for low guidance, so large values tend to harm rather than help.
+    cfg_scale: Annotated[float, Field(ge=0.0, le=15.0)] | None = None
+    #: What the sound should NOT contain - "reverb, music, voices".
+    negative_prompt: str = ""
+
+    # --- shaping: free to change, applied at placement ---------------------------
+    #: Roll off everything below this, to stop a sound competing with a voice.
+    highpass_hz: Annotated[float, Field(ge=20.0, le=20000.0)] | None = None
+    #: Roll off everything above this, to soften something harsh.
+    lowpass_hz: Annotated[float, Field(ge=20.0, le=20000.0)] | None = None
+    #: Varispeed. Negative is deeper and longer; -12 is an octave down at twice the length.
+    pitch_semitones: Annotated[float, Field(ge=-24.0, le=24.0)] = 0.0
+    #: Play it backwards, turning a decay into a swell.
+    reverse: bool = False
+
+
+class SfxCue(Shaping):
     """A one-shot sound placed at a point in time — an impact, whoosh, click, footstep."""
 
     id: str
@@ -59,6 +89,9 @@ class SfxCue(BaseModel):
     pan: Annotated[float, Field(ge=-1.0, le=1.0)] = 0.0
     seed: int = 0
     shot: int | None = None
+    #: Fades on a one-shot, for softening an abrupt attack or shortening a long tail.
+    fade_in: Seconds = 0.0
+    fade_out: Seconds = 0.0
     # Generated clips often carry 50-200ms of lead-in before the actual hit. When true,
     # the renderer detects the onset and shifts placement so the transient lands on `at`
     # rather than the file merely *starting* there.
@@ -70,7 +103,7 @@ class SfxCue(BaseModel):
         return self.at + self.duration
 
 
-class BedCue(BaseModel):
+class BedCue(Shaping):
     """A sustained layer spanning a time range — a music bed or an ambience/room-tone bed."""
 
     id: str
@@ -122,6 +155,13 @@ class CueSheet(BaseModel):
     # Keep the source audio (dialogue/voiceover) in the mix. Turned off for silent footage.
     keep_original_audio: bool = True
     original_gain_db: Gain = 0.0
+    #: Whole-bus trims, so a mix can be balanced with three numbers rather than by editing
+    #: every cue. Applied on top of each cue's own gain.
+    music_bus_db: Gain = 0.0
+    sfx_bus_db: Gain = 0.0
+    ambience_bus_db: Gain = 0.0
+    #: Overrides the preset's ducking depth when set.
+    duck_depth_db: Annotated[float, Field(ge=-24.0, le=0.0)] | None = None
     music: list[BedCue] = Field(default_factory=list)
     ambience: list[BedCue] = Field(default_factory=list)
     sfx: list[SfxCue] = Field(default_factory=list)
