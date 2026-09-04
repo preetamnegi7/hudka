@@ -241,3 +241,46 @@ class TestHardwareAdaptation:
         for device in ("cpu", "cuda"):
             engine = StableAudio3Engine("stable-audio-3-small-sfx", device=device)
             assert engine._effective_steps() == DEFAULT_STEPS
+
+
+class TestPlacementRules:
+    """Rules that stop the scaffold placing sounds a listener hears as mistakes."""
+
+    @staticmethod
+    def _shots(*spans):
+        shots, t = [], 0.0
+        for i, length in enumerate(spans):
+            shots.append({"index": i, "start": t, "end": t + length, "motion": 0.2,
+                          "peak_motion": 0.3, "peak_at": t + length / 2})
+            t += length
+        return shots, t
+
+    def test_cuts_closer_than_the_gap_get_one_transition(self):
+        """Two page loads a second apart used to get a whoosh each - a stutter."""
+        shots, total = self._shots(8.0, 1.0, 8.0, 8.0)      # cuts at 8.0, 9.0, 17.0
+        sheet = design.scaffold(analysis(duration=total, shots=shots), preset="short-form")
+        cuts = sorted(c.at for c in sheet.sfx if c.id.startswith("cut"))
+        assert 8.0 in cuts and 17.0 in cuts
+        assert 9.0 not in cuts, "the second of two adjacent cuts must not get its own whoosh"
+
+    def test_a_flash_frame_marks_one_transition_at_its_start(self):
+        """A flash between two scenes is one event: the whoosh lands where the picture
+        first changes, and the flash's exit a moment later gets nothing."""
+        shots, total = self._shots(8.0, 0.9, 8.0)           # the 0.9s shot is a flash
+        sheet = design.scaffold(analysis(duration=total, shots=shots), preset="short-form")
+        cuts = sorted(c.at for c in sheet.sfx if c.id.startswith("cut"))
+        assert cuts == [8.0]
+
+    def test_heavy_narration_uses_the_low_end_of_density(self):
+        """96% speech on a 3.6-minute clip produced 35 effects, mostly cursor jitter."""
+        from hudka import presets
+
+        minutes = 3.6
+        spikes = [(t, 0.03) for t in range(2, int(minutes * 60) - 2, 3)]   # plenty of anchors
+        curve = flat_curve(minutes * 60, 0.0005, spikes)
+        talky = design.scaffold(analysis(duration=minutes * 60, curve=curve,
+                                         speech=[(0, minutes * 60 * 0.96)]),
+                                preset="explainer")
+        low, high = presets.get("explainer").sfx_per_minute
+        assert len(talky.sfx) <= round(low * minutes) + 1
+        assert len(talky.sfx) < round(((low + high) / 2) * minutes * 0.8)

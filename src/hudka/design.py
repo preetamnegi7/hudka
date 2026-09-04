@@ -25,6 +25,8 @@ from .schema import CURRENT_VERSION, BedCue, CueSheet, SfxCue, VideoInfo
 MIN_GAP_SECONDS = 2.0
 #: Motion below this is camera noise or compression jitter, not an event.
 MOTION_FLOOR = 0.0025
+#: Speech coverage above which the design drops to the preset's minimum effect density.
+HEAVY_NARRATION = 0.9
 
 
 def speech_coverage(analysis: dict, duration: float) -> float:
@@ -144,12 +146,19 @@ def scaffold(analysis: dict, *, preset: str | None = None,
 
     # Density from the preset, pulled down when most of the clip is someone talking.
     low, high = pre.sfx_per_minute
-    target = int(round(((low + high) / 2) * minutes))
-    if coverage > 0.6:
-        # Thin out under narration, but only somewhat. Level is handled separately by the
-        # preset; cutting both density and gain for the same reason double-counts it, and
-        # that double-count is what left four near-inaudible clicks in a 49s clip.
-        target = int(round(target * 0.8))
+    if coverage > HEAVY_NARRATION:
+        # Someone is talking almost the whole time: aim at the preset's *low* end. The
+        # midpoint scaled by 0.8 put 35 effects under a 3.6-minute narration, most of
+        # them cursor jitter given a rotating "keyboard tap" prompt.
+        target = int(round(low * minutes))
+    else:
+        target = int(round(((low + high) / 2) * minutes))
+        if coverage > 0.6:
+            # Thin out under narration, but only somewhat. Level is handled separately by
+            # the preset; cutting both density and gain for the same reason double-counts
+            # it, and that double-count is what left four near-inaudible clicks in a 49s
+            # clip.
+            target = int(round(target * 0.8))
     target = max(3, min(target, 60))
 
     cues: list[SfxCue] = []
@@ -157,6 +166,12 @@ def scaffold(analysis: dict, *, preset: str | None = None,
 
     for i, shot in enumerate(shots):
         if i == 0 or shot["start"] < 0.15:
+            continue
+        # One transition per *moment*, not per boundary. Two page loads a second apart
+        # were each given a whoosh (cut04 at 31.9s, cut05 at 32.9s on a real clip), which
+        # reads as a stutter. The sound marks the first change; a flash frame's exit a
+        # moment later is suppressed by the same spacing rule.
+        if cut_times and shot["start"] - cut_times[-1] < MIN_GAP_SECONDS:
             continue
         cut_times.append(round(shot["start"], 3))
         cues.append(SfxCue(

@@ -695,3 +695,25 @@ class TestProxyAnalysis:
 
         source = inspect.getsource(analyze_mod.detect_speech)
         assert '"-vn"' in source
+
+
+class TestBedLoopSeam:
+    def test_music_loops_use_a_musical_crossfade(self):
+        """A 0.25s splice mid-phrase at 2:00 is what a listener notices in minute two."""
+        import inspect
+
+        assert mix.BED_LOOP_CROSSFADE_S >= 1.0
+        assert "crossfade=BED_LOOP_CROSSFADE_S" in inspect.getsource(mix.place_beds)
+
+    def test_long_crossfade_holds_level_across_the_seam(self):
+        from hudka.audio import loop_to_length
+
+        t = np.arange(SAMPLE_RATE * 6) / SAMPLE_RATE
+        tone = (np.sin(2 * np.pi * 110 * t) * 0.4).astype(np.float32)
+        clip = np.stack([tone, tone], axis=-1)
+        looped = loop_to_length(clip, 14.0, crossfade=mix.BED_LOOP_CROSSFADE_S)
+        # RMS in 250ms windows across the first seam (around 6s) must not dip.
+        win = SAMPLE_RATE // 4
+        levels = [np.sqrt((looped[i:i + win, 0] ** 2).mean())
+                  for i in range(int(4.5 * SAMPLE_RATE), int(7.5 * SAMPLE_RATE), win)]
+        assert min(levels) > 0.7 * max(levels), "seam dipped audibly"

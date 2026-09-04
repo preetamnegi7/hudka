@@ -37,6 +37,11 @@ from .schema import BedCue, CueSheet, SfxCue
 #: Loudness every music/ambience bed is brought to before its cue gain applies.
 REF_BED_LUFS = -20.0
 
+#: Crossfade at a looped bed's seam. The 0.25s default is right for a looped room tone
+#: and wrong for music: a 120s bed under a 218s video produced a hard musical seam at
+#: 2:00, mid-phrase. Two seconds is long enough to read as an arrangement, not a splice.
+BED_LOOP_CROSSFADE_S = 2.0
+
 
 class MixError(RuntimeError):
     pass
@@ -180,8 +185,8 @@ def place_beds(beds: list[BedCue], stems: dict[str, Path], total: float, *,
 
         clip = _shaped(clip, bed)
 
-        clip = (loop_to_length(clip, bed.duration) if bed.loop
-                else fit_length(clip, bed.duration))
+        clip = (loop_to_length(clip, bed.duration, crossfade=BED_LOOP_CROSSFADE_S)
+                if bed.loop else fit_length(clip, bed.duration))
         clip = _apply_fades(clip, bed.fade_in, bed.fade_out)
         clip = clip * db_to_gain(norm_db + bed.gain_db + bus_offset_db)
         _add_at(bus, clip, int(round(bed.start * SAMPLE_RATE)))
