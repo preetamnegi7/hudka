@@ -58,7 +58,7 @@ def create_app(workspace: Path) -> FastAPI:
     workspace = Path(workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 
-    app = FastAPI(title="Saand Efectos", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Hudka", docs_url=None, redoc_url=None)
     runner = JobRunner()
 
     # ---------------------------------------------------------------- helpers
@@ -248,7 +248,7 @@ def create_app(workspace: Path) -> FastAPI:
 
     @app.post("/api/project/{name}/scaffold")
     def api_scaffold(name: str, opts: ScaffoldOptions) -> JSONResponse:
-        """Mechanical starting cue sheet. See `saand.design` for how anchors are chosen."""
+        """Mechanical starting cue sheet. See `hudka.design` for how anchors are chosen."""
         project = project_dir(name)
         analysis = read_json(project / "analysis.json")
         if not analysis:

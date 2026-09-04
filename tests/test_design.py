@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from saand import design
-from saand.schema import VideoInfo
+from hudka import design
+from hudka.schema import VideoInfo
 
 
 def analysis(*, duration=48.0, width=3840, height=2160, shots=None, curve=None,
@@ -138,7 +138,7 @@ class TestSpeechCoverage:
 class TestScaffoldDefaults:
     def test_omitting_the_preset_lets_the_designer_choose(self):
         """A concrete default would override the auto-choice and never be noticed."""
-        from saand.ui.server import ScaffoldOptions
+        from hudka.ui.server import ScaffoldOptions
 
         assert ScaffoldOptions().preset is None
 
@@ -156,14 +156,14 @@ class TestGenerationLength:
     """
 
     def test_scaffolded_one_shots_clear_the_unreliable_range(self):
-        from saand.design import SFX_DURATION_SECONDS
-        from saand.engines.stable_audio3 import MIN_RELIABLE_SECONDS
+        from hudka.design import SFX_DURATION_SECONDS
+        from hudka.engines.stable_audio3 import MIN_RELIABLE_SECONDS
 
         assert SFX_DURATION_SECONDS >= MIN_RELIABLE_SECONDS
 
     def test_short_cues_are_generated_at_a_safe_length(self):
         """A 0.5s cue must not be *generated* at 0.5s, whatever it is placed at."""
-        from saand.engines.stable_audio3 import MIN_RELIABLE_SECONDS
+        from hudka.engines.stable_audio3 import MIN_RELIABLE_SECONDS
 
         requested = 0.5
         assert max(requested, MIN_RELIABLE_SECONDS) == MIN_RELIABLE_SECONDS
@@ -171,7 +171,7 @@ class TestGenerationLength:
     def test_saturation_detector_separates_a_hit_from_a_square_wave(self):
         import numpy as np
 
-        from saand.engines.stable_audio3 import SATURATION_CREST_DB, _crest_db
+        from hudka.engines.stable_audio3 import SATURATION_CREST_DB, _crest_db
 
         hit = np.zeros((2, 44100), dtype=np.float32)
         hit[:, :400] = 0.6
@@ -184,7 +184,7 @@ class TestGenerationLength:
     def test_silence_does_not_divide_by_zero(self):
         import numpy as np
 
-        from saand.engines.stable_audio3 import _crest_db
+        from hudka.engines.stable_audio3 import _crest_db
 
         assert _crest_db(np.zeros((2, 1000), dtype=np.float32)) == 0.0
 
@@ -205,7 +205,7 @@ class TestPromptVariety:
         assert "transition" in roles
 
     def test_gains_come_from_the_preset_not_hardcoded(self):
-        from saand import presets
+        from hudka import presets
 
         curve = flat_curve(48, 0.0005, [(10.0, 0.04), (20.0, 0.03), (30.0, 0.02)])
         sheet = design.scaffold(analysis(curve=curve), preset="explainer")
@@ -223,20 +223,20 @@ class TestHardwareAdaptation:
     """
 
     def test_cpu_caps_the_expensive_bed_steps(self, monkeypatch):
-        from saand.engines.stable_audio3 import DEFAULT_STEPS, StableAudio3Engine
+        from hudka.engines.stable_audio3 import DEFAULT_STEPS, StableAudio3Engine
 
         engine = StableAudio3Engine("stable-audio-3-small-music", device="cpu")
         assert engine.steps == 50, "the GPU setting should still be what is configured"
         assert engine._effective_steps() == DEFAULT_STEPS
 
     def test_gpu_keeps_the_richer_setting(self):
-        from saand.engines.stable_audio3 import BED_STEPS, StableAudio3Engine
+        from hudka.engines.stable_audio3 import BED_STEPS, StableAudio3Engine
 
         engine = StableAudio3Engine("stable-audio-3-small-music", device="cuda")
         assert engine._effective_steps() == BED_STEPS
 
     def test_one_shots_are_unaffected_either_way(self):
-        from saand.engines.stable_audio3 import DEFAULT_STEPS, StableAudio3Engine
+        from hudka.engines.stable_audio3 import DEFAULT_STEPS, StableAudio3Engine
 
         for device in ("cpu", "cuda"):
             engine = StableAudio3Engine("stable-audio-3-small-sfx", device=device)

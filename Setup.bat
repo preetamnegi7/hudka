@@ -1,11 +1,11 @@
 @echo off
-REM One-time setup. Double-click this once, then use "Saand Efectos.bat" to run the app.
+REM One-time setup. Double-click this once, then use "Hudka.bat" to run the app.
 setlocal
 cd /d "%~dp0"
-title Saand Efectos - Setup
+title Hudka - Setup
 
 echo ============================================
-echo   Saand Efectos - first-time setup
+echo   Hudka - first-time setup
 echo ============================================
 echo.
 
@@ -87,10 +87,13 @@ call uv run hf auth login
 echo.
 
 echo ============================================
-call uv run saand doctor
+call uv run hudka doctor
 echo ============================================
 echo.
-echo Setup finished. Launch the app with "Saand Efectos.bat".
+echo Setup finished. Launch the app with "Hudka.bat".
+echo.
+echo Note: running "uv sync" later removes the engine and the CUDA build.
+echo       If generation stops working, just run this script again.
 echo.
 pause
 exit /b 0

@@ -12,7 +12,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from saand.ui.server import create_app
+from hudka.ui.server import create_app
 
 from .conftest import requires_ffmpeg
 
@@ -56,7 +56,7 @@ def project(client, fixture_video):
 class TestImport:
     def test_serves_the_page(self, client):
         res = client.get("/")
-        assert res.status_code == 200 and "Saand Efectos" in res.text
+        assert res.status_code == 200 and "Hudka" in res.text
 
     def test_import_by_path(self, client, fixture_video):
         res = client.post("/api/import/path", json={"path": str(fixture_video)})
@@ -213,7 +213,7 @@ class TestFreshProjectContract:
         assert data["cues"] is None
 
     def test_page_gates_the_analyse_step_on_length(self):
-        from saand.ui.server import HERE
+        from hudka.ui.server import HERE
 
         page = (HERE / "index.html").read_text(encoding="utf-8")
         assert "!(proj.shots || []).length" in page,             "the Analyse step must test array length, not array truthiness"
@@ -270,7 +270,7 @@ class TestValidationFeedback:
 
     def test_page_gives_new_cues_a_valid_starter_prompt(self):
         """Otherwise "+ effect" creates a cue that can never be saved."""
-        from saand.ui.server import HERE
+        from hudka.ui.server import HERE
 
         page = (HERE / "index.html").read_text(encoding="utf-8")
         assert "STARTER_PROMPT" in page
@@ -291,14 +291,14 @@ class TestEngineAuthReporting:
     def test_auth_check_is_used_rather_than_model_info(self):
         import inspect
 
-        from saand.engines import stable_audio3
+        from hudka.engines import stable_audio3
 
         source = inspect.getsource(stable_audio3.StableAudio3Engine.is_authorised)
         assert "auth_check(" in source
         assert "model_info(" not in source,             "model_info succeeds on a gated repo that cannot actually be downloaded"
 
     def test_gated_failure_explains_both_steps(self):
-        from saand.engines.stable_audio3 import StableAudio3Engine
+        from hudka.engines.stable_audio3 import StableAudio3Engine
 
         message = StableAudio3Engine("stable-audio-3-medium")._gated_message()
         assert "huggingface.co/stabilityai/stable-audio-3-medium" in message
@@ -309,8 +309,8 @@ class TestEngineAuthReporting:
         """Detection works on the message text, so it survives hub version changes."""
         import inspect
 
-        from saand.engines import stable_audio3
-        from saand.engines.stable_audio3 import _is_gated
+        from hudka.engines import stable_audio3
+        from hudka.engines.stable_audio3 import _is_gated
 
         assert _is_gated(RuntimeError("401 Client Error"))
         assert _is_gated(RuntimeError("Cannot access gated repo for url ..."))
@@ -327,7 +327,7 @@ class TestOfflineOperation:
     """
 
     def test_no_outbound_calls_once_weights_are_cached(self, monkeypatch, tmp_path):
-        import saand.ui.server as server
+        import hudka.ui.server as server
 
         weights = tmp_path / "models--stabilityai--stable-audio-3-small-sfx" / "snapshots" / "abc"
         weights.mkdir(parents=True)
@@ -342,7 +342,7 @@ class TestOfflineOperation:
         assert server._engine_auth()["needed"] is False
 
     def test_offline_flag_short_circuits_the_check(self, monkeypatch):
-        import saand.ui.server as server
+        import hudka.ui.server as server
 
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         monkeypatch.setattr(server, "_AUTH_CACHE", None)
@@ -354,7 +354,7 @@ class TestOfflineOperation:
         assert result["offline"] is True and result["needed"] is False
 
     def test_result_is_cached_across_page_loads(self, monkeypatch):
-        import saand.ui.server as server
+        import hudka.ui.server as server
 
         monkeypatch.setattr(server, "_AUTH_CACHE", None)
         calls = []

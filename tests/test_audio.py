@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from saand.audio import (
+from hudka.audio import (
     SAMPLE_RATE,
     db_to_gain,
     find_onset,

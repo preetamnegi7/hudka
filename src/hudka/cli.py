@@ -1,14 +1,14 @@
 """Command line interface.
 
-Most people should use the app instead - double-click `Saand Efectos.bat`, or:
+Most people should use the app instead - double-click `Hudka.bat`, or:
 
-    saand gui                        the whole workflow in a browser
+    hudka gui                        the whole workflow in a browser
 
-    saand analyze  video.mp4         analyse and build contact sheets
-    saand scaffold out/video         heuristic starting cue sheet
-    saand render   out/video         generate, mix, master, mux
-    saand licences                   what each engine permits
-    saand doctor                     check ffmpeg and engines
+    hudka analyze  video.mp4         analyse and build contact sheets
+    hudka scaffold out/video         heuristic starting cue sheet
+    hudka render   out/video         generate, mix, master, mux
+    hudka licences                   what each engine permits
+    hudka doctor                     check ffmpeg and engines
 """
 
 from __future__ import annotations
@@ -64,12 +64,12 @@ def analyze(
     console.print(f"     contact sheets: {project / 'contact'} ({len(result.contact_sheets)})")
     console.print(f"     analysis:       {project / 'analysis.json'}")
     console.print("\nNext: write cues.json from the contact sheets, "
-                  f"or run [bold]saand scaffold {project}[/] for a starting point.")
+                  f"or run [bold]hudka scaffold {project}[/] for a starting point.")
 
 
 @app.command()
 def scaffold(
-    project: Path = typer.Argument(..., help="Project directory from `saand analyze`"),
+    project: Path = typer.Argument(..., help="Project directory from `hudka analyze`"),
     preset: str = typer.Option(None, "--preset", "-p", help="Default: chosen from the video"),
     engine: str = typer.Option(None, "--engine", help="Override the engine for every cue"),
 ) -> None:
@@ -81,7 +81,7 @@ def scaffold(
     project = Path(project)
     analysis_path = project / "analysis.json"
     if not analysis_path.exists():
-        console.print(f"[red]no analysis.json in {project}; run `saand analyze` first[/]")
+        console.print(f"[red]no analysis.json in {project}; run `hudka analyze` first[/]")
         raise typer.Exit(1)
 
     analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
@@ -117,7 +117,7 @@ def render(
     cues_path = project / "cues.json"
     if not cues_path.exists():
         console.print(f"[red]no cues.json in {project}[/]")
-        console.print(f"Run [bold]saand scaffold {project}[/] to create one.")
+        console.print(f"Run [bold]hudka scaffold {project}[/] to create one.")
         raise typer.Exit(1)
 
     try:
@@ -172,7 +172,7 @@ def gui(
     workspace.mkdir(parents=True, exist_ok=True)
     url = f"http://127.0.0.1:{port}"
 
-    console.print(f"[green]Saand Efectos[/] running at [bold]{url}[/]")
+    console.print(f"[green]Hudka[/] running at [bold]{url}[/]")
     console.print(f"[dim]projects in {workspace.resolve()}  -  press Ctrl+C to stop[/]")
 
     if not no_browser:

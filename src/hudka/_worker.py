@@ -1,6 +1,6 @@
 """Generation worker: one engine, one process, then exit.
 
-Run as `python -m saand._worker`, reading a JSON job from stdin.
+Run as `python -m hudka._worker`, reading a JSON job from stdin.
 
 Why a subprocess at all. Loading a second model into a process that has already loaded
 and released one is unreliable here: it is pathologically slow at best, and at worst the

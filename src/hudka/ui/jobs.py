@@ -49,7 +49,7 @@ class JobRunner:
     """Runs one job at a time and keeps their logs for the page to poll."""
 
     def __init__(self, history: int = 40):
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="saand-job")
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hudka-job")
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []
         self._lock = threading.Lock()

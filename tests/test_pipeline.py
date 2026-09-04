@@ -12,10 +12,10 @@ import json
 import numpy as np
 import pytest
 
-from saand import analyze as analyze_mod
-from saand import mix, render
-from saand.audio import SAMPLE_RATE, read_wav
-from saand.schema import BedCue, CueSheet, SfxCue
+from hudka import analyze as analyze_mod
+from hudka import mix, render
+from hudka.audio import SAMPLE_RATE, read_wav
+from hudka.schema import BedCue, CueSheet, SfxCue
 
 from .conftest import CUT_TIMES, FIXTURE_DURATION, requires_ffmpeg
 
@@ -75,7 +75,7 @@ class TestAnalysis:
 class TestPlacement:
     def test_sfx_lands_at_the_cue_time(self, tmp_path):
         """The core timing guarantee: energy appears where the cue says, not elsewhere."""
-        from saand.audio import write_wav
+        from hudka.audio import write_wav
 
         clip = np.zeros((SAMPLE_RATE, 2), dtype=np.float32)
         clip[:1000] = 0.8  # immediate transient, no lead-in
@@ -92,7 +92,7 @@ class TestPlacement:
 
     def test_transient_alignment_compensates_for_lead_in(self, tmp_path):
         """A clip with 200ms of silence up front must still hit exactly on the cue."""
-        from saand.audio import write_wav
+        from hudka.audio import write_wav
 
         clip = np.zeros((SAMPLE_RATE, 2), dtype=np.float32)
         clip[int(0.2 * SAMPLE_RATE) : int(0.2 * SAMPLE_RATE) + 1000] = 0.8
@@ -108,7 +108,7 @@ class TestPlacement:
 
     def test_gain_is_raw_attenuation_when_normalization_is_off(self, tmp_path):
         """`normalize=False` keeps the original meaning, for version-1 cue sheets."""
-        from saand.audio import write_wav
+        from hudka.audio import write_wav
 
         stem = write_wav(tmp_path / "s.wav",
                          np.ones((SAMPLE_RATE, 2), dtype=np.float32) * 0.5)
@@ -123,7 +123,7 @@ class TestPlacement:
         This is the property the whole fix rests on: two stems generated 20 dB apart must
         end up at the same place, so a preset gain means something.
         """
-        from saand.audio import REF_SFX_PEAK_DBFS, peak_dbfs, write_wav
+        from hudka.audio import REF_SFX_PEAK_DBFS, peak_dbfs, write_wav
 
         levels = {}
         # 12 dB apart, not 30: a wider spread hits the +-18 dB corrective clamp, which is
@@ -142,7 +142,7 @@ class TestPlacement:
 
     def test_sustained_cue_is_held_back_by_the_rms_ceiling(self, tmp_path):
         """A long sustained cue must not arrive as loud as a click sharing its peak."""
-        from saand.audio import normalize_one_shot, rms_dbfs
+        from hudka.audio import normalize_one_shot, rms_dbfs
 
         click = np.zeros((SAMPLE_RATE, 2), dtype=np.float32)
         click[:500] = 0.5
@@ -154,7 +154,7 @@ class TestPlacement:
         assert rms_dbfs(normalized_drone) == pytest.approx(-26.0, abs=0.5)
 
     def test_cue_past_the_end_is_clipped_not_crashed(self, tmp_path):
-        from saand.audio import write_wav
+        from hudka.audio import write_wav
 
         stem = write_wav(tmp_path / "s.wav", np.ones((2 * SAMPLE_RATE, 2), dtype=np.float32))
         cue = SfxCue(id="s", at=4.5, duration=2.0, prompt="tail",
@@ -228,7 +228,7 @@ class TestFullRender:
 
 class TestLicenceEnforcementInRender:
     def test_render_refuses_a_restricted_engine_without_opt_in(self, fixture_video, tmp_path):
-        from saand.engines.base import LicenceError
+        from hudka.engines.base import LicenceError
 
         info = analyze_mod.probe(fixture_video)
         sheet = sheet_for(info, sfx=[
@@ -240,7 +240,7 @@ class TestLicenceEnforcementInRender:
 
     def test_gate_runs_before_any_generation(self, fixture_video, tmp_path):
         """Fail fast: a licence problem must not surface after a long render."""
-        from saand.engines.base import LicenceError
+        from hudka.engines.base import LicenceError
 
         info = analyze_mod.probe(fixture_video)
         sheet = sheet_for(info, sfx=[
@@ -280,7 +280,7 @@ class TestMixBalance:
 
     def test_unmeasurable_bed_loudness_does_not_silence_it(self, tmp_path, monkeypatch):
         """A NaN loudness reading must not propagate into the gain and zero the stem."""
-        from saand.audio import peak_dbfs, write_wav
+        from hudka.audio import peak_dbfs, write_wav
 
         clip = np.ones((SAMPLE_RATE, 2), dtype=np.float32) * 0.3
         stem = write_wav(tmp_path / "bed.wav", clip)
@@ -292,8 +292,8 @@ class TestMixBalance:
         assert peak_dbfs(bus) > -60.0, "an unmeasurable bed was silenced"
 
     def test_balance_report_flags_a_buried_mix(self, tmp_path):
-        from saand import balance as balance_mod
-        from saand.audio import write_wav
+        from hudka import balance as balance_mod
+        from hudka.audio import write_wav
 
         buses = tmp_path / "buses"
         loud = np.random.default_rng(0).standard_normal((SAMPLE_RATE * 2, 2)).astype(np.float32) * 0.3
@@ -305,8 +305,8 @@ class TestMixBalance:
         assert any("music" in p for p in report.problems())
 
     def test_balance_report_passes_a_sane_mix(self, tmp_path):
-        from saand import balance as balance_mod
-        from saand.audio import write_wav
+        from hudka import balance as balance_mod
+        from hudka.audio import write_wav
 
         buses = tmp_path / "buses"
         rng = np.random.default_rng(0)
@@ -318,7 +318,7 @@ class TestMixBalance:
         assert not [p for p in report.problems() if "music" in p]
 
     def test_silent_footage_has_no_balance_to_report(self, tmp_path):
-        from saand import balance as balance_mod
+        from hudka import balance as balance_mod
 
         (tmp_path / "buses").mkdir(parents=True)
         assert balance_mod.measure(tmp_path) is None

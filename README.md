@@ -1,4 +1,4 @@
-# Saand Efectos
+# Hudka
 
 **AI sound design from video, running entirely on your own machine.**
 
@@ -43,14 +43,19 @@ Then:
 
 1. **Clone this repo**
 2. **Double-click `Setup.bat`** — installs everything and walks you through model access
-3. **Double-click `Saand Efectos.bat`** — the app opens in your browser
+3. **Double-click `Hudka.bat`** — the app opens in your browser
 
 The first render downloads about **3.3 GB** of model weights. After that it runs offline.
 
 > `Setup.bat` exists for a reason. Installing Stable Audio 3 pulls the **CPU-only** torch
 > wheel, and the obvious fix silently does nothing — `uv` sees `torch==2.7.1` as already
 > satisfied, because the `+cpu` local tag does not affect version matching. It needs
-> `--reinstall`. The script handles it. `saand doctor` warns you if it ever regresses.
+> `--reinstall`. The script handles it.
+>
+> For the same reason, **running `uv sync` again removes the engine and the CUDA build** —
+> they are installed outside `pyproject.toml` deliberately, since pinning a git URL and a
+> GPU-specific wheel would break installation for everyone else. If generation stops
+> working, run `Setup.bat` again. `hudka doctor` tells you which piece is missing.
 
 ### Model access
 
@@ -150,12 +155,12 @@ server down mid-render.
 The app covers everything, but if you prefer a terminal:
 
 ```bash
-uv run saand gui                 # the app
-uv run saand analyze clip.mp4    # shots, motion, speech, contact sheets
-uv run saand scaffold out/clip   # starting cue sheet
-uv run saand render   out/clip   # generate, mix, master, mux
-uv run saand licences            # what each engine permits
-uv run saand doctor              # check ffmpeg, engines, GPU
+uv run hudka gui                 # the app
+uv run hudka analyze clip.mp4    # shots, motion, speech, contact sheets
+uv run hudka scaffold out/clip   # starting cue sheet
+uv run hudka render   out/clip   # generate, mix, master, mux
+uv run hudka licences            # what each engine permits
+uv run hudka doctor              # check ffmpeg, engines, GPU
 ```
 
 ## Tests

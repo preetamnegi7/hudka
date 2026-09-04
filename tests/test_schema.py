@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from saand.schema import BedCue, CueSheet, SfxCue, VideoInfo
+from hudka.schema import BedCue, CueSheet, SfxCue, VideoInfo
 
 
 def video(duration: float = 12.0) -> VideoInfo:

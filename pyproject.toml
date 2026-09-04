@@ -1,5 +1,5 @@
 [project]
-name = "saand"
+name = "hudka"
 version = "0.1.0"
 description = "AI sound design from video: generates copyright-clean sound effects and background music matched to what's on screen."
 readme = "README.md"
@@ -19,19 +19,19 @@ dependencies = [
 
 [project.optional-dependencies]
 # Generation engines are installed separately: they are large, GPU-specific, and
-# distributed from git rather than PyPI. `saand doctor` reports what is present, and
+# distributed from git rather than PyPI. `hudka doctor` reports what is present, and
 # each engine wrapper prints its own install command if it is missing. See README.
 dev = ["pytest>=8.3", "pytest-cov>=6.0", "httpx2>=0.28"]
 
 [project.scripts]
-saand = "saand.cli:app"
+hudka = "hudka.cli:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/saand"]
+packages = ["src/hudka"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import pytest
 
-from saand import engines
-from saand.engines.base import LicenceError, require_usable
-from saand.engines.licences import (
+from hudka import engines
+from hudka.engines.base import LicenceError, require_usable
+from hudka.engines.licences import (
     CC_BY_NC,
     MIT,
     STABILITY_COMMUNITY,
     TENCENT_HUNYUAN_COMMUNITY,
 )
-from saand.engines.stub import SilenceEngine
+from hudka.engines.stub import SilenceEngine
 
 
 class FakeEngine:
@@ -116,8 +116,8 @@ class TestPreflight:
     def test_missing_engine_is_caught_before_any_stem_is_written(self, tmp_path, monkeypatch):
         import pytest
 
-        from saand import render
-        from saand.schema import BedCue, CueSheet, VideoInfo
+        from hudka import render
+        from hudka.schema import BedCue, CueSheet, VideoInfo
 
         self._hide_engine(monkeypatch)
         sheet = CueSheet(
@@ -134,7 +134,7 @@ class TestPreflight:
     def test_the_message_names_the_real_install_command(self, monkeypatch):
         import pytest
 
-        from saand.engines.stable_audio3 import StableAudio3Engine
+        from hudka.engines.stable_audio3 import StableAudio3Engine
 
         self._hide_engine(monkeypatch)
         with pytest.raises(RuntimeError) as exc:
@@ -145,7 +145,7 @@ class TestPreflight:
         assert "preview" in text, "should point at the offline fallback"
 
     def test_stub_engine_passes_preflight(self):
-        from saand import engines
+        from hudka import engines
 
         engine = engines.build("silence")
         preflight = getattr(engine, "preflight", None)
@@ -160,9 +160,9 @@ class TestPreflight:
         """
         import pytest
 
-        from saand import render
-        from saand.engines.base import LicenceError
-        from saand.schema import BedCue, CueSheet, SfxCue, VideoInfo
+        from hudka import render
+        from hudka.engines.base import LicenceError
+        from hudka.schema import BedCue, CueSheet, SfxCue, VideoInfo
 
         self._hide_engine(monkeypatch)
         sheet = CueSheet(
@@ -188,7 +188,7 @@ class TestModelCacheLocation:
     def test_cache_redirect_does_not_move_the_token_store(self):
         import inspect
 
-        from saand import engines
+        from hudka import engines
 
         source = inspect.getsource(engines._point_hf_cache_at_model_dir)
         body = source.split('"""')[-1]
@@ -199,7 +199,7 @@ class TestModelCacheLocation:
     def test_weights_are_cached_off_the_system_drive(self):
         import os
 
-        from saand import engines
+        from hudka import engines
 
         cache = os.environ.get("HF_HUB_CACHE")
         assert cache, "model downloads should be redirected away from the default cache"
@@ -218,7 +218,7 @@ class TestModelDirSelection:
     def test_exfat_is_rejected_however_much_space_it_has(self, monkeypatch):
         import shutil
 
-        from saand import engines
+        from hudka import engines
 
         monkeypatch.setattr(engines, "_filesystem_of", lambda drive: "exFAT")
         monkeypatch.setattr(
@@ -230,7 +230,7 @@ class TestModelDirSelection:
     def test_ntfs_with_room_is_accepted(self, monkeypatch):
         import shutil
 
-        from saand import engines
+        from hudka import engines
 
         monkeypatch.setattr(engines, "_filesystem_of", lambda drive: "NTFS")
         monkeypatch.setattr(
@@ -242,7 +242,7 @@ class TestModelDirSelection:
     def test_ntfs_without_room_is_rejected(self, monkeypatch):
         import shutil
 
-        from saand import engines
+        from hudka import engines
 
         monkeypatch.setattr(engines, "_filesystem_of", lambda drive: "NTFS")
         monkeypatch.setattr(
@@ -252,19 +252,19 @@ class TestModelDirSelection:
         assert not engines._is_suitable("C:\\", need_gb=40.0)
 
     def test_explicit_override_wins(self, monkeypatch, tmp_path):
-        from saand import engines
+        from hudka import engines
 
-        monkeypatch.setenv("SAAND_MODEL_DIR", str(tmp_path))
+        monkeypatch.setenv("HUDKA_MODEL_DIR", str(tmp_path))
         assert engines.model_dir() == tmp_path
 
     def test_chosen_directory_is_usable_in_practice(self):
         """Whatever it picks on this machine must pass its own suitability check."""
         import os
 
-        from saand import engines
+        from hudka import engines
 
         chosen = engines.model_dir()
-        if os.name == "nt" and not os.environ.get("SAAND_MODEL_DIR"):
+        if os.name == "nt" and not os.environ.get("HUDKA_MODEL_DIR"):
             drive = str(chosen)[:3]
             assert engines._is_suitable(drive, need_gb=40.0), \
                 f"{drive} was selected but is not suitable for memory-mapped weights"

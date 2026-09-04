@@ -72,7 +72,7 @@ def pick_bed_engine(duration: float) -> str:
 
 
 #: Every engine id and its licence, including the one deliberately excluded, so
-#: `saand licences` can show the reasoning rather than silently omitting it.
+#: `hudka licences` can show the reasoning rather than silently omitting it.
 LICENCE_TABLE: dict[str, Licence] = {
     "stable-audio-3-medium": STABILITY_COMMUNITY,
     "stable-audio-3-small-sfx": STABILITY_COMMUNITY,
@@ -132,9 +132,9 @@ def model_dir(need_gb: float = 40.0) -> Path:
     """Where weights are cached.
 
     Prefers a fixed NTFS volume with room to spare - never an external or exFAT disk,
-    whatever its free space. Override with SAAND_MODEL_DIR.
+    whatever its free space. Override with HUDKA_MODEL_DIR.
     """
-    configured = os.environ.get("SAAND_MODEL_DIR")
+    configured = os.environ.get("HUDKA_MODEL_DIR")
     if configured:
         return Path(configured)
 
@@ -144,9 +144,9 @@ def model_dir(need_gb: float = 40.0) -> Path:
         if roomiest:
             # Most free space among the drives that are actually safe to use.
             best = max(roomiest, key=lambda d: shutil.disk_usage(d).free)
-            return Path(best) / "saand-models"
+            return Path(best) / "hudka-models"
 
-    return Path.home() / ".cache" / "saand-models"
+    return Path.home() / ".cache" / "hudka-models"
 
 
 def _point_hf_cache_at_model_dir() -> None:

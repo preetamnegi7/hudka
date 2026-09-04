@@ -1,4 +1,4 @@
-"""Saand Efectos — AI sound design from video.
+"""Hudka — AI sound design from video.
 
 Generates sound effects and background music matched to video content, using only
 models whose licences permit commercial use and redistribution of outputs.

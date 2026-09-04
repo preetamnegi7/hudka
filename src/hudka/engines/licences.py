@@ -1,7 +1,7 @@
 """Licence facts for every engine, verified against the licence texts in September 2026.
 
 Kept in one file so the legal position is auditable at a glance rather than scattered
-through implementations. `saand licences` prints this table.
+through implementations. `hudka licences` prints this table.
 """
 
 from __future__ import annotations

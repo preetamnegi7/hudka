@@ -13,7 +13,7 @@ and exactly when.
 ## 1. Analyse
 
 ```bash
-.venv/Scripts/python.exe -m saand.cli analyze "<video>"
+.venv/Scripts/python.exe -m hudka.cli analyze "<video>"
 ```
 
 Note the project directory it reports (`out/<name>`).
@@ -32,10 +32,10 @@ Then read `out/<name>/analysis.json` for:
 
 ## 3. Write the cue sheet
 
-Write `out/<name>/cues.json` matching `src/saand/schema.py`. Base it on what you actually
+Write `out/<name>/cues.json` matching `src/hudka/schema.py`. Base it on what you actually
 see, not on a template.
 
-Pick a preset (`saand presets` lists them; default `short-form`) and follow its guidance for
+Pick a preset (`hudka presets` lists them; default `short-form`) and follow its guidance for
 cue density, gain and ducking. Set `target_lufs`/`true_peak_db` from the preset.
 
 **Engines** — default to these; they are cleared for commercial use worldwide:
@@ -64,7 +64,7 @@ Keep ids short and meaningful (`door01`, `whoosh02`) — they name the cached st
 ## 4. Render
 
 ```bash
-.venv/Scripts/python.exe -m saand.cli render "out/<name>"
+.venv/Scripts/python.exe -m hudka.cli render "out/<name>"
 ```
 
 Report the measured LUFS and peak. If it says the loudness is off target, say so rather than
@@ -77,7 +77,7 @@ Tell the user:
 - where `final.mp4` is
 - what you designed and why — the reasoning behind the choices, briefly
 - measured loudness, and the licence report at `out/<name>/LICENSE-REPORT.md`
-- that `saand ui out/<name>` opens the audition page to re-roll individual cues
+- that `hudka ui out/<name>` opens the audition page to re-roll individual cues
 
 If they want changes, edit `cues.json` and re-render — the content-hash cache regenerates
 only the cues that actually changed, so iterating is cheap.

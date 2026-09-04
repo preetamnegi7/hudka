@@ -271,7 +271,7 @@ def _run_worker(engine_id: str, cues: list[dict], device: str | None,
     by_id = {c["id"]: c for c in cues}
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "saand._worker"],
+        [sys.executable, "-m", "hudka._worker"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace",
     )
