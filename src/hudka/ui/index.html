@@ -470,7 +470,7 @@ $('#pathInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#bt
 
 function showLibrary() {
   stopPoll();
-  proj = null; dirty = false;
+  proj = null; markClean();
   $('#viewLibrary').classList.remove('hidden');
   $('#viewProject').classList.add('hidden');
   $('#btnBack').classList.add('hidden');
@@ -487,7 +487,7 @@ let viewPreview = false;   // player shows preview.mp4 rather than final.mp4
 
 async function openProject(name) {
   proj = await api(`/api/project/${name}`);
-  dirty = false;
+  markClean();
   viewPreview = false;
   $('#previewMode').checked = false;
   syncPreviewUi();
@@ -590,9 +590,10 @@ function paintPlayer() {
   }
   const hasSomething = proj.stage === 'rendered' || (viewPreview && proj.has_preview);
   $('#abWrap').classList.toggle('hidden', !hasSomething);
-  $('#abWrap').firstChild.textContent = '';
-  $('#abWrap').append(document.createTextNode(
-    viewPreview && !(proj.stage === 'rendered') ? ' original (vs preview)' : ' original'));
+  // lastChild, not firstChild: firstChild is the checkbox, so clearing it did nothing and
+  // the append stacked up - after two repaints the label read "original original".
+  $('#abWrap').lastChild.textContent =
+    viewPreview && proj.stage !== 'rendered' ? ' original (vs preview)' : ' original';
 }
 $('#ab').onchange = () => { $('#player').dataset.src = ''; paintPlayer(); };
 
@@ -839,7 +840,21 @@ $('#player').addEventListener('timeupdate', e => {
 
 /* -------------------------------------------------------------- cues */
 
-function markDirty() { dirty = true; say('unsaved changes', 'danger'); }
+function markDirty() {
+  dirty = true;
+  say('unsaved changes', 'danger');
+  // The only signal used to be six grey words in the header, so edits looked lost.
+  const btn = $('#btnSave');
+  btn.classList.add('primary');
+  btn.textContent = 'Save changes';
+}
+
+function markClean() {
+  dirty = false;
+  const btn = $('#btnSave');
+  btn.classList.remove('primary');
+  btn.textContent = 'Save';
+}
 
 function field(label, value, attrs, onInput) {
   const wrap = document.createElement('div');
@@ -850,7 +865,14 @@ function field(label, value, attrs, onInput) {
     input.innerHTML = attrs.options.map(o =>
       `<option${String(o) === String(value) ? ' selected' : ''}>${o}</option>`).join('');
   } else { Object.assign(input, attrs); input.value = value; }
-  input.addEventListener('input', () => { onInput(input.value); markDirty(); });
+  input.addEventListener('input', () => {
+    // Ignore unparsable intermediates. Clearing "at" to retype it used to read as 0 and
+    // snap the cue to the start of the video mid-keystroke.
+    if (input.type === 'number' && input.value !== ''
+        && !Number.isFinite(parseFloat(input.value))) return;
+    onInput(input.value);
+    markDirty();
+  });
   wrap.append(lab, input);
   return wrap;
 }
@@ -1095,7 +1117,15 @@ $$('[data-add]').forEach(btn => {
     const kind = btn.dataset.add;
     const dur = proj.cues.video.duration;
     const at = Math.min($('#player').currentTime || 0, dur);
-    const id = `${kind.slice(0, 3)}${String((proj.cues[kind] || []).length + 1).padStart(2, '0')}`;
+    // Smallest unused number across every list, not length+1: deleting sfx02 from three
+    // effects and adding again produced a second sfx03, which the schema rejects as a
+    // duplicate id - so the user saw "one cue needs attention" on a cue they just made.
+    const prefix = kind.slice(0, 3);
+    const used = new Set(['music', 'ambience', 'sfx']
+      .flatMap(k => (proj.cues[k] || []).map(c => c.id)));
+    let n = 1;
+    while (used.has(`${prefix}${String(n).padStart(2, '0')}`)) n++;
+    const id = `${prefix}${String(n).padStart(2, '0')}`;
     const base = { id, prompt: STARTER_PROMPT[kind], seed: Math.floor(Math.random() * 100000), note: '' };
 
     if (kind === 'sfx') {
@@ -1128,6 +1158,10 @@ const numOrNull = v => (v === '' || v === null ? null : parseFloat(v));
   .forEach(id => {
     $(`#${id}`).addEventListener('change', () => {
       if (!proj.cues) return;
+      if (id === 'preset') {
+        const pre = lib.presets[$('#preset').value];
+        if (pre && Number.isFinite(pre.target_lufs)) $('#lufs').value = pre.target_lufs;
+      }
       proj.cues.preset = $('#preset').value;
       proj.cues.target_lufs = parseFloat($('#lufs').value);
       proj.cues.keep_original_audio = $('#keepOriginal').value === 'true';
@@ -1148,7 +1182,7 @@ async function saveCues() {
       body: JSON.stringify(proj.cues),
     });
     if (!res.ok) { showCueErrors((await res.json()).detail); return false; }
-    dirty = false;
+    markClean();
     badCues.clear();
     say('saved', 'muted');
     $('#projBanner').innerHTML = '';
@@ -1203,6 +1237,13 @@ $('#btnLicences').onclick = () => {
      ships a licence report listing the engine, licence, prompt and seed per asset.</p>`;
   $('#licenceDlg').showModal();
 };
+
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    if (dirty && proj && proj.cues) saveCues();
+  }
+});
 
 window.addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
 

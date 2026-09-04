@@ -534,3 +534,49 @@ class TestDeleteIsRecoverable:
         assert again == name
         restored = client.post(f"/api/trash/{entry['trashed_as']}/restore").json()["name"]
         assert restored != name and restored.startswith(name)
+
+
+class TestEditorAffordances:
+    """Small page bugs that each made a correct action look like a failure.
+
+    Static assertions on the page source, the pattern already used above: these are
+    vanilla-JS behaviours with no server side to exercise through TestClient.
+    """
+
+    @staticmethod
+    def _page() -> str:
+        from hudka.ui.server import HERE
+
+        return (HERE / "index.html").read_text(encoding="utf-8")
+
+    def test_new_cue_ids_avoid_collisions(self):
+        """length+1 gave a second sfx03 after deleting sfx02; the schema then refused
+        the sheet and blamed the cue the user had just created."""
+        page = self._page()
+        assert "while (used.has(" in page
+        assert "(proj.cues[kind] || []).length + 1" not in page
+
+    def test_unsaved_edits_change_the_save_button(self):
+        page = self._page()
+        assert "function markClean()" in page
+        assert "'Save changes'" in page
+
+    def test_ctrl_s_saves(self):
+        page = self._page()
+        assert "e.key === 's'" in page
+
+    def test_choosing_a_preset_moves_the_loudness_target(self):
+        """Otherwise a preset picked for its guidance keeps the previous target."""
+        page = self._page()
+        assert "if (id === 'preset')" in page
+        assert "pre.target_lufs" in page
+
+    def test_numeric_fields_ignore_unparsable_intermediates(self):
+        """Clearing 'at' to retype it used to read as 0 and snap the cue to the start."""
+        page = self._page()
+        assert "Number.isFinite(parseFloat(input.value))" in page
+
+    def test_ab_label_does_not_accumulate(self):
+        page = self._page()
+        assert "$('#abWrap').lastChild.textContent" in page
+        assert "$('#abWrap').firstChild.textContent = ''" not in page
