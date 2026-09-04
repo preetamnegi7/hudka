@@ -1,6 +1,10 @@
+<img src="assets/hudka.svg" width="76" align="left" alt="" hspace="14" vspace="4">
+
 # Hudka
 
 **AI sound design from video, running entirely on your own machine.**
+
+<br clear="left">
 
 Point it at a clip. It finds the shots and the moments that matter, generates sound
 effects and a music bed to match, mixes them under any existing dialogue, masters to a
@@ -9,6 +13,11 @@ streaming loudness target, and puts the audio back on the picture.
 No cloud. No API keys. No per-render cost. No subscription. Every sound is generated
 locally, and every render ships a licence report saying exactly what you are allowed to
 do with it.
+
+---
+
+Named for the *hudka* — the small waisted hand drum carried by Garhwali storytellers,
+held under rope tension and played with the fingers.
 
 ---
 
@@ -32,18 +41,28 @@ The licence check is enforced in code, not documented in a footnote — see
 
 ## Quick start (Windows)
 
-You need two things first, both free:
+Open PowerShell and paste this:
+
+```powershell
+irm https://raw.githubusercontent.com/preetamnegi7/hudka/main/install.ps1 | iex
+```
+
+It installs whatever you are missing, clones the repo, sets everything up and walks you
+through model access. Safe to run twice — it skips what is already there.
+
+Then **double-click `Hudka.bat`** and the app opens in your browser.
+
+<details>
+<summary>Prefer to do it by hand?</summary>
 
 ```powershell
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"   # uv, manages Python
 winget install Gyan.FFmpeg                                    # ffmpeg, does the video work
+git clone https://github.com/preetamnegi7/hudka && cd hudka
 ```
 
-Then:
-
-1. **Clone this repo**
-2. **Double-click `Setup.bat`** — installs everything and walks you through model access
-3. **Double-click `Hudka.bat`** — the app opens in your browser
+Then double-click `Setup.bat`, which handles the rest.
+</details>
 
 The first render downloads about **3.3 GB** of model weights. After that it runs offline.
 

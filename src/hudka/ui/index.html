@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hudka</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23ffd666"/><g fill="%23181a21"><path d="M13 11 C13 21 26.5 25 26.5 32 C26.5 39 13 43 13 53 L51 53 C51 43 37.5 39 37.5 32 C37.5 25 51 21 51 11 Z"/><ellipse cx="32" cy="11" rx="19" ry="4.4"/><ellipse cx="32" cy="53" rx="19" ry="4.4"/></g></svg>'>
 <style>
   :root {
     --bg:#0e0f13; --panel:#16181f; --raise:#1c1f28; --line:#272b36; --text:#e6e8ef;
@@ -35,7 +36,7 @@
   header { display:flex; align-items:center; gap:14px; padding:12px 20px;
     border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:20; }
   .brand { font-size:15px; font-weight:650; letter-spacing:.2px; }
-  .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); display:inline-block; }
+  .mark { display:inline-flex; color:var(--accent); line-height:0; }
 
   .view { padding:22px; max-width:1500px; margin:0 auto; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px; }
@@ -127,7 +128,7 @@
 <body>
 
 <header>
-  <span class="dot"></span>
+  <span class="mark" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="17" height="17"   role="img" aria-label="Hudka">  <title>Hudka</title>  <!-- Silhouette only. The lacing becomes noise below about 32px, so the favicon    and any small usage drop it and keep the shape, which is what reads. -->  <g fill="currentColor">   <path d="M13 11 C13 21 26.5 25 26.5 32 C26.5 39 13 43 13 53       L51 53 C51 43 37.5 39 37.5 32 C37.5 25 51 21 51 11 Z"/>   <ellipse cx="32" cy="11" rx="19" ry="4.4"/>   <ellipse cx="32" cy="53" rx="19" ry="4.4"/>  </g> </svg> </span>
   <span class="brand">Hudka</span>
   <span id="crumb" class="muted tiny"></span>
   <div class="spacer"></div>

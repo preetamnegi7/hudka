@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     role="img" aria-label="Hudka">
+  <title>Hudka</title>
+  <!-- Silhouette only. The lacing becomes noise below about 32px, so the favicon
+       and any small usage drop it and keep the shape, which is what reads. -->
+  <g fill="currentColor">
+    <path d="M13 11 C13 21 26.5 25 26.5 32 C26.5 39 13 43 13 53
+             L51 53 C51 43 37.5 39 37.5 32 C37.5 25 51 21 51 11 Z"/>
+    <ellipse cx="32" cy="11" rx="19" ry="4.4"/>
+    <ellipse cx="32" cy="53" rx="19" ry="4.4"/>
+  </g>
+</svg>
