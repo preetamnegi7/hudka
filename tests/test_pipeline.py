@@ -425,3 +425,73 @@ class TestBusAndTakes:
                          preset="explainer", duck_depth_db=-2.0)
         assert sheet.duck_depth_db == -2.0
         assert CueSheet(video=sheet.video, preset="explainer").duck_depth_db is None
+
+
+class TestPreviewIsUnmistakable:
+    """A placeholder must never pass for a product.
+
+    A preview render (stub engine) was heard as hiss and taken for a broken generator:
+    the stub emitted noise, the output was named final.mp4, the UI said "on target", and
+    the stem cleanup would have deleted a real render's cached audio. Every one of those
+    is pinned here.
+    """
+
+    def test_placeholder_is_tonal_not_noise(self, tmp_path):
+        from hudka.engines.base import GenerateRequest
+        from hudka.engines.stub import SilenceEngine
+
+        path = SilenceEngine().generate(GenerateRequest(prompt="x", duration=3.0, seed=3),
+                                        tmp_path / "p.wav")
+        samples, sr = read_wav(path)
+        mono = samples.mean(axis=1) * np.hanning(len(samples))
+        spectrum = np.abs(np.fft.rfft(mono)) + 1e-12
+        freqs = np.fft.rfftfreq(len(mono), 1 / sr)
+        band = spectrum[(freqs > 50) & (freqs < 16000)]
+        flatness = float(np.exp(np.log(band).mean()) / band.mean())
+        assert flatness < 0.2, f"placeholder sounds like noise (flatness {flatness:.2f})"
+
+    def test_placeholder_has_an_onset_and_is_deterministic(self, tmp_path):
+        from hudka.audio import find_onset
+        from hudka.engines.base import GenerateRequest
+        from hudka.engines.stub import SilenceEngine
+
+        a, _ = read_wav(SilenceEngine().generate(
+            GenerateRequest(prompt="x", duration=2.0, seed=9), tmp_path / "a.wav"))
+        b, _ = read_wav(SilenceEngine().generate(
+            GenerateRequest(prompt="x", duration=2.0, seed=9), tmp_path / "b.wav"))
+        assert np.array_equal(a, b)
+        assert find_onset(a) < 0.05
+
+    def test_preview_never_touches_the_real_render(self, fixture_video, tmp_path):
+        """The data-loss case: previewing after a real render deleted the real stems."""
+        info = analyze_mod.probe(fixture_video)
+        sheet = sheet_for(info)
+        real = render.render(sheet, tmp_path)
+        real_stems = {p.name for p in (tmp_path / "stems").rglob("*.wav")}
+        real_final_mtime = real.final_video.stat().st_mtime
+        assert real_stems
+
+        result = render.render(sheet, tmp_path, preview=True)
+
+        assert result.is_preview
+        assert result.final_video == tmp_path / "preview" / "preview.mp4"
+        assert {p.name for p in (tmp_path / "stems").rglob("*.wav")} == real_stems, \
+            "preview render deleted or altered the real stems"
+        assert real.final_video.stat().st_mtime == real_final_mtime
+        assert (tmp_path / "preview" / "provenance.json").exists()
+        assert not (tmp_path / "preview" / "final.mp4").exists()
+
+    def test_preview_provenance_says_so(self, fixture_video, tmp_path):
+        info = analyze_mod.probe(fixture_video)
+        result = render.render(sheet_for(info), tmp_path, preview=True)
+        ledger = json.loads(result.provenance.read_text(encoding="utf-8"))
+        assert ledger["preview"] is True
+        report = result.licence_report.read_text(encoding="utf-8")
+        assert "PREVIEW" in report.splitlines()[0]
+        assert "not for use" in report.splitlines()[0].lower()
+
+    def test_real_render_is_not_flagged(self, fixture_video, tmp_path):
+        info = analyze_mod.probe(fixture_video)
+        result = render.render(sheet_for(info), tmp_path)
+        assert result.is_preview is False
+        assert json.loads(result.provenance.read_text())["preview"] is False

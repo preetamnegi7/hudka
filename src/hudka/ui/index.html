@@ -236,7 +236,12 @@
         <div class="row wrap" style="margin-top:16px; gap:8px">
           <button class="primary" id="btnAct"></button>
           <button class="ghost" id="btnSave">Save</button>
-          <label class="tiny muted" id="previewWrap"><input type="checkbox" id="previewMode" style="vertical-align:-2px"> preview (placeholder audio)</label>
+          <label class="tiny muted" id="previewWrap"><input type="checkbox" id="previewMode" style="vertical-align:-2px"> preview (placeholder tones)</label>
+        </div>
+        <div id="previewBanner" class="banner warn hidden" style="margin:10px 0 0">
+          <strong>Preview mode</strong> &mdash; renders metronome-style placeholder tones so
+          you can check timing and balance. <strong>Not real audio.</strong> Untick to
+          generate real sound.
         </div>
 
         <div id="jobBox" class="hidden" style="margin-top:14px">
@@ -438,9 +443,14 @@ $('#btnBack').onclick = () => {
   showLibrary();
 };
 
+let viewPreview = false;   // player shows preview.mp4 rather than final.mp4
+
 async function openProject(name) {
   proj = await api(`/api/project/${name}`);
   dirty = false;
+  viewPreview = false;
+  $('#previewMode').checked = false;
+  syncPreviewUi();
   $('#viewLibrary').classList.add('hidden');
   $('#viewProject').classList.remove('hidden');
   $('#btnBack').classList.remove('hidden');
@@ -490,6 +500,12 @@ function paintSteps() {
 
 function paintBanner() {
   const host = $('#projBanner');
+  if (viewPreview && proj.has_preview && proj.stage !== 'rendered') {
+    host.innerHTML = `<div class="banner warn">
+      <strong>Showing a preview.</strong> Placeholder tones, not real audio.
+      Untick <em>preview</em> and press <strong>Render</strong> to generate sound.</div>`;
+    return;
+  }
   const auth = lib.engine_auth || {};
   if (auth.needed && auth.authorised === false && !proj.missing_source) {
     host.innerHTML = `<div class="banner warn">
@@ -516,17 +532,35 @@ function paintBanner() {
 
 function paintPlayer() {
   const wantOriginal = $('#ab').checked;
-  const src = (proj.stage === 'rendered' && !wantOriginal)
-    ? `/media/${proj.name}/video` : `/media/${proj.name}/source`;
+  let src = `/media/${proj.name}/source`;
+  if (!wantOriginal) {
+    if (viewPreview && proj.has_preview) src = `/media/${proj.name}/preview`;
+    else if (proj.stage === 'rendered') src = `/media/${proj.name}/video`;
+  }
   const player = $('#player');
-  const full = src + (proj.stage === 'rendered' ? `?v=${Date.now()}` : '');
+  const full = src + (src.endsWith('/source') ? '' : `?v=${proj.preview_at || Date.now()}`);
   if (!player.dataset.src || player.dataset.src !== src) {
     player.dataset.src = src;
     player.src = full;
   }
-  $('#abWrap').classList.toggle('hidden', proj.stage !== 'rendered');
+  const hasSomething = proj.stage === 'rendered' || (viewPreview && proj.has_preview);
+  $('#abWrap').classList.toggle('hidden', !hasSomething);
+  $('#abWrap').firstChild.textContent = '';
+  $('#abWrap').append(document.createTextNode(
+    viewPreview && !(proj.stage === 'rendered') ? ' original (vs preview)' : ' original'));
 }
 $('#ab').onchange = () => { $('#player').dataset.src = ''; paintPlayer(); };
+
+function syncPreviewUi() {
+  const on = $('#previewMode').checked;
+  $('#previewBanner').classList.toggle('hidden', !on);
+  const btn = $('#btnAct');
+  if (proj && proj.cues && (proj.shots || []).length) {
+    btn.textContent = on ? 'Render preview'
+      : (proj.stage === 'rendered' ? 'Re-render' : 'Render');
+  }
+}
+$('#previewMode').addEventListener('change', syncPreviewUi);
 
 /* Preset suggestion from the video's shape. Portrait is always a short; a long
    landscape clip is usually narration-led, so it wants heavier ducking. A guess the
@@ -590,6 +624,7 @@ function paintAction() {
   if (!(proj.shots || []).length) { btn.textContent = 'Analyse video'; btn.onclick = doAnalyze; }
   else if (!proj.cues) { btn.textContent = 'Create cue sheet'; btn.onclick = doScaffold; }
   else { btn.textContent = proj.stage === 'rendered' ? 'Re-render' : 'Render'; btn.onclick = doRender; }
+  syncPreviewUi();
 }
 
 async function doAnalyze() {
@@ -647,11 +682,24 @@ function startPoll(jobId) {
       stopPoll();
       $('#jobSpin').classList.add('hidden');
       const r = job.result || {};
-      say(r.lufs !== undefined
-        ? `${r.lufs} LUFS · peak ${r.peak} dBTP · ${r.generated} new, ${r.cached} reused`
-        : 'done', r.on_target === false ? 'danger' : 'muted');
+      if (job.kind === 'render') {
+        $('#previewMode').checked = false;
+        viewPreview = !!r.preview;
+      }
+      if (r.preview) {
+        say('preview rendered — placeholder tones, not real audio', 'danger');
+        $('#projBanner').innerHTML = `<div class="banner warn">
+          <strong>This is a preview.</strong> What you hear is metronome-style placeholder
+          tones, not generated sound. Untick <em>preview</em> and press
+          <strong>Render</strong> for real audio.</div>`;
+      } else {
+        say(r.lufs !== undefined
+          ? `${r.lufs} LUFS · peak ${r.peak} dBTP · ${r.generated} new, ${r.cached} reused`
+          : 'done', r.on_target === false ? 'danger' : 'muted');
+      }
       $('#player').dataset.src = '';
       await refresh();
+      syncPreviewUi();
     } else if (job.status === 'error') {
       stopPoll();
       $('#jobSpin').classList.add('hidden');

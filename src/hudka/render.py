@@ -45,6 +45,8 @@ class RenderResult:
     #: Bus levels relative to the source audio. None for silent footage, where there is
     #: no reference to balance against.
     balance: "balance.Balance | None" = None
+    #: Placeholder tones, no model. Named and reported differently at every layer.
+    is_preview: bool = False
 
 
 def _kind_of(cue: SfxCue | BedCue, sheet: CueSheet) -> str:
@@ -165,6 +167,10 @@ def generate_stems(
     return stems
 
 
+#: Everything a preview writes lives under this subdirectory of the project.
+PREVIEW_DIR = "preview"
+
+
 def render(
     sheet: CueSheet,
     out_dir: Path,
@@ -173,17 +179,33 @@ def render(
     opted_in: Iterable[str] = (),
     device: str | None = None,
     progress: Progress | None = None,
+    preview: bool = False,
 ) -> RenderResult:
-    """Full render: generate, place, duck, master, mux, and write the licence report."""
+    """Full render: generate, place, duck, master, mux, and write the licence report.
+
+    `preview` swaps every engine for the placeholder and confines all output to
+    `out_dir/preview/`. The confinement is not cosmetic: stem cleanup in
+    `generate_stems` deletes any WAV the current run did not produce, and preview stems
+    carry different cache keys, so a preview run over the real stem tree would destroy a
+    finished render's cached audio.
+    """
     say = progress or (lambda _: None)
     out_dir = Path(out_dir)
+
+    if preview:
+        sheet = sheet.model_copy(deep=True)
+        for cue in sheet.all_cues():
+            cue.engine = "silence"
+        out_dir = out_dir / PREVIEW_DIR
+        say("PREVIEW: placeholder tones, no model - not real audio")
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     video = Path(sheet.video.path)
     total = sheet.video.duration
     preset = presets.get(sheet.preset)
 
-    ledger = Ledger(video=str(video))
+    ledger = Ledger(video=str(video), preview=preview)
     stems = generate_stems(
         sheet, out_dir, ledger,
         allow_noncommercial=allow_noncommercial, opted_in=opted_in,
@@ -261,7 +283,7 @@ def render(
     lufs, peak = mix.integrated_lufs(mastered)
 
     say("muxing")
-    final = mix.mux(video, mastered, out_dir / "final.mp4")
+    final = mix.mux(video, mastered, out_dir / ("preview.mp4" if preview else "final.mp4"))
 
     ledger.verify(out_dir / "stems")
     prov_json, prov_md = ledger.save(out_dir)
@@ -272,6 +294,7 @@ def render(
         measured_lufs=lufs, measured_peak_db=peak, stems=stems, balance=report,
         cached_count=sum(1 for r in ledger.records if r.cached),
         generated_count=sum(1 for r in ledger.records if not r.cached),
+        is_preview=preview,
     )
 
 

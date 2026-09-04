@@ -111,6 +111,10 @@ def render(
         help="Permit non-commercial-only models. Output cannot be monetized.",
     ),
     device: str = typer.Option(None, "--device", help="torch device, e.g. cuda or cpu"),
+    preview: bool = typer.Option(
+        False, "--preview",
+        help="Placeholder tones instead of real audio, to check timing. Writes to preview/.",
+    ),
 ) -> None:
     """Generate every cue, mix, master to the preset target, and mux back onto the video."""
     project = Path(project)
@@ -133,7 +137,7 @@ def render(
     try:
         result = render_mod.render(
             sheet, project, allow_noncommercial=allow_noncommercial,
-            opted_in=set(engine), device=device,
+            opted_in=set(engine), device=device, preview=preview,
             progress=lambda msg: console.print(f"[dim]{msg}[/]"),
         )
     except engines.LicenceError as exc:

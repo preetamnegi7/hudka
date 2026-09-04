@@ -37,7 +37,12 @@ def client(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def project(client, fixture_video):
-    """A project imported by path, analysed, scaffolded and rendered in preview mode."""
+    """A project imported by path, analysed, scaffolded on the stub engine, and rendered.
+
+    A *real* render on the stub, not a preview: a preview is confined to preview/ and is
+    deliberately not a render, so it would leave the project at the wrong stage for
+    everything downstream that expects final.mp4.
+    """
     res = client.post("/api/import/path", json={"path": str(fixture_video)})
     assert res.status_code == 200
     name = res.json()["name"]
@@ -46,9 +51,9 @@ def project(client, fixture_video):
     assert wait_for(client, job["id"])["status"] == "done"
 
     assert client.post(f"/api/project/{name}/scaffold",
-                       json={"preset": "short-form"}).status_code == 200
+                       json={"preset": "short-form", "engine": "silence"}).status_code == 200
 
-    job = client.post(f"/api/project/{name}/render", json={"preview": True}).json()
+    job = client.post(f"/api/project/{name}/render", json={}).json()
     assert wait_for(client, job["id"])["status"] == "done"
     return name
 
@@ -110,10 +115,19 @@ class TestWorkflow:
                if j["project"] == project and j["kind"] == "render"][0]
         assert job["result"]["lufs"] == pytest.approx(-14.0, abs=1.5)
 
-    def test_preview_mode_leaves_the_saved_sheet_alone(self, client, project):
+    def test_preview_mode_leaves_the_saved_sheet_alone(self, client, fixture_video):
         """Preview swaps engines at render time; it must not rewrite cues.json."""
-        cues = client.get(f"/api/project/{project}").json()["cues"]
-        assert all(c["engine"] != "silence" for c in cues["sfx"]), \
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        wait_for(client, client.post(f"/api/project/{name}/analyze").json()["id"])
+        client.post(f"/api/project/{name}/scaffold", json={"preset": "short-form"})
+        before = client.get(f"/api/project/{name}").json()["cues"]
+        assert all(c["engine"] != "silence" for c in before["sfx"])
+
+        wait_for(client, client.post(f"/api/project/{name}/render",
+                                     json={"preview": True}).json()["id"])
+
+        after = client.get(f"/api/project/{name}").json()["cues"]
+        assert [c["engine"] for c in after["sfx"]] == [c["engine"] for c in before["sfx"]], \
             "preview mode overwrote the saved engines"
 
     def test_scaffold_before_analysis_is_refused(self, client, fixture_video):
@@ -422,3 +436,43 @@ class TestSheetForwardCompatibility:
         client = TestClient(create_app(workspace))
         res = client.get("/api/project/broken")
         assert res.status_code == 200, "a broken sheet must stay openable, not 500"
+
+
+class TestPreviewThroughTheGui:
+    """The page must present a preview as a preview at every point it can be seen."""
+
+    def test_preview_does_not_advance_the_stage(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        assert wait_for(client, client.post(f"/api/project/{name}/analyze").json()["id"])["status"] == "done"
+        client.post(f"/api/project/{name}/scaffold", json={"preset": "short-form"})
+
+        job = wait_for(client, client.post(f"/api/project/{name}/render",
+                                           json={"preview": True}).json()["id"])
+        assert job["status"] == "done"
+        assert job["result"]["preview"] is True
+
+        data = client.get(f"/api/project/{name}").json()
+        assert data["stage"] == "designed", "a preview is not a render"
+        assert data["has_preview"] is True
+
+    def test_preview_can_be_watched_but_not_downloaded(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        wait_for(client, client.post(f"/api/project/{name}/analyze").json()["id"])
+        client.post(f"/api/project/{name}/scaffold", json={"preset": "short-form"})
+        wait_for(client, client.post(f"/api/project/{name}/render", json={"preview": True}).json()["id"])
+
+        assert client.get(f"/media/{name}/preview").status_code == 200
+        assert client.get(f"/media/{name}/video").status_code == 404
+        res = client.get(f"/download/{name}/video")
+        assert res.status_code == 409
+        assert "preview" in res.json()["detail"]
+
+    def test_page_resets_the_checkbox_and_never_says_on_target_for_a_preview(self):
+        from hudka.ui.server import HERE
+
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        assert "$('#previewMode').checked = false" in page, "preview must not be sticky"
+        assert "placeholder tones, not real audio" in page
+        assert "previewBanner" in page
+        # The green success path must be unreachable for a preview result.
+        assert "if (r.preview) {" in page

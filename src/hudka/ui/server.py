@@ -110,9 +110,12 @@ def create_app(workspace: Path) -> FastAPI:
         else:
             stage = "imported"
 
+        preview_file = project / render_mod.PREVIEW_DIR / "preview.mp4"
         return {
             "name": project.name,
             "stage": stage,
+            "has_preview": preview_file.exists(),
+            "preview_at": preview_file.stat().st_mtime if preview_file.exists() else None,
             "busy": bool(active),
             "job": active.as_dict() if active else None,
             "duration": video.get("duration", 0),
@@ -284,18 +287,12 @@ def create_app(workspace: Path) -> FastAPI:
             raise HTTPException(status_code=409, detail="there is no cue sheet to render")
 
         sheet = CueSheet.load(project / "cues.json")
-        if opts.preview:
-            sheet = sheet.model_copy(deep=True)
-            for cue in sheet.all_cues():
-                cue.engine = "silence"
 
         def work(say):
-            if opts.preview:
-                say("preview mode: placeholder audio, real engines not used")
             try:
                 result = render_mod.render(
                     sheet, project, allow_noncommercial=opts.allow_noncommercial,
-                    opted_in=set(opts.opted_in), progress=say,
+                    opted_in=set(opts.opted_in), progress=say, preview=opts.preview,
                 )
             except LicenceError as exc:
                 # Surface the licence explanation verbatim; it tells the user what to do.
@@ -310,6 +307,7 @@ def create_app(workspace: Path) -> FastAPI:
                 "on_target": off <= 0.5,
                 "generated": result.generated_count,
                 "cached": result.cached_count,
+                "preview": result.is_preview,
             }
 
         return JSONResponse(runner.submit("render", name, work).as_dict())
@@ -419,6 +417,13 @@ def create_app(workspace: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail="not rendered yet")
         return FileResponse(final, media_type="video/mp4")
 
+    @app.get("/media/{name}/preview")
+    def media_preview(name: str) -> FileResponse:
+        preview = project_dir(name) / render_mod.PREVIEW_DIR / "preview.mp4"
+        if not preview.exists():
+            raise HTTPException(status_code=404, detail="no preview rendered")
+        return FileResponse(preview, media_type="video/mp4")
+
     @app.get("/media/{name}/source")
     def media_source(name: str) -> FileResponse:
         return FileResponse(_resolve_source(project_dir(name)), media_type="video/mp4")
@@ -444,6 +449,13 @@ def create_app(workspace: Path) -> FastAPI:
         project = project_dir(name)
         final = project / "final.mp4"
         if not final.exists():
+            if (project / render_mod.PREVIEW_DIR / "preview.mp4").exists():
+                # A preview is placeholder tones. Handing it out as the deliverable is
+                # exactly how one was mistaken for a broken product.
+                raise HTTPException(
+                    status_code=409,
+                    detail="only a preview exists - untick preview and render for real",
+                )
             raise HTTPException(status_code=404, detail="not rendered yet")
         return FileResponse(final, media_type="video/mp4",
                             filename=f"{name}-with-sound.mp4")

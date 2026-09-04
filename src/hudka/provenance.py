@@ -42,6 +42,10 @@ class Ledger:
     video: str
     created: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     records: list[Record] = field(default_factory=list)
+    #: A preview render uses placeholder tones and no model. It must say so everywhere it
+    #: can be read, because a preview once passed for a finished render and was heard as
+    #: a broken product.
+    preview: bool = False
 
     def add(self, *, cue_id: str, kind: str, file: Path, engine_id: str, licence: Licence,
             prompt: str, seed: int, duration: float, cached: bool = False) -> None:
@@ -80,6 +84,7 @@ class Ledger:
             json.dumps({
                 "video": self.video,
                 "created": self.created,
+                "preview": self.preview,
                 "records": [asdict(r) for r in self.records],
             }, indent=2) + "\n",
             encoding="utf-8",
@@ -89,7 +94,25 @@ class Ledger:
         md_path.write_text(self.to_markdown(), encoding="utf-8")
         return json_path, md_path
 
+    def _preview_markdown(self) -> str:
+        return "\n".join([
+            "# PREVIEW - placeholder audio, not for use",
+            "",
+            f"**Source video:** `{Path(self.video).name}`  ",
+            f"**Generated:** {self.created}  ",
+            f"**Placeholder cues:** {len(self.records)}",
+            "",
+            "This render was made in **preview mode**. Every sound in it is a synthetic tone",
+            "from the placeholder engine - no model ran, and nothing here is real audio. It",
+            "exists only to check timing and mix balance.",
+            "",
+            "Untick *preview* and render again to generate real sound.",
+            "",
+        ])
+
     def to_markdown(self) -> str:
+        if self.preview:
+            return self._preview_markdown()
         lines = [
             "# Audio licence report",
             "",
