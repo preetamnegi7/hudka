@@ -167,6 +167,13 @@ space, because the external backup disk usually has the most of it.
 released one is unreliable, and in the GUI a native crash would otherwise take the whole
 server down mid-render.
 
+**Analysis was 75% of a render, and the GPU was not the answer.** On a 4K 218s clip,
+analysis took 159s: PySceneDetect decodes the whole source itself, single-threaded, on
+top of ffmpeg decoding it again for the motion curve, and the speech scan decoded the
+picture it never looked at. Now the source is decoded once into a 640px proxy and
+everything frame-based reads that — 25s. Measured, not assumed: CUDA decode of the same
+stream was **48s** against 18s for the 24-core software decoder, so it is not used.
+
 **Drain the worker's stderr while reading its stdout.** Reading stdout to EOF and stderr
 afterwards is the textbook pipe deadlock, and it happened: each cue's progress bar goes
 to stderr, a 7-cue render never filled the pipe buffer, and a 36-cue render blocked the
@@ -205,7 +212,7 @@ uv run hudka doctor              # check ffmpeg, engines, GPU
 uv run pytest
 ```
 
-185 tests, all offline — they run against a stub engine and an ffmpeg-generated fixture,
+188 tests, all offline — they run against a stub engine and an ffmpeg-generated fixture,
 so no weights or GPU are needed. They assert shot detection against known cuts,
 sample-accurate cue placement, loudness within tolerance, mix balance, cache reuse, and
 that the licence gate blocks restricted engines before any generation starts.

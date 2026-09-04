@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,27 @@ from .schema import VideoInfo
 #: Contact sheet layout. 3x3 keeps each frame legible while covering a lot of ground.
 GRID = (3, 3)
 TILE_WIDTH = 480
+
+#: Shot detection and motion analysis run on a small proxy, decoded from the source once.
+#: PySceneDetect otherwise decodes the full source itself through OpenCV, single-threaded
+#: - 125 s of a 159 s analysis on a 4K 218 s clip, on top of ffmpeg's own 21 s decode for
+#: the motion curve. One ffmpeg pass at 320px is ~19 s on this machine and is the floor:
+#: every frame has to be decoded to find a cut. (CUDA decode was measured at 48 s for
+#: the same pass - a 24-core software decoder beats NVDEC here, so it is not used.)
+#: 640px, not smaller: width is free (the pass is all source decode) and it matters for
+#: low-contrast transitions. On a 4K screen recording the full-resolution run found nine
+#: boundaries; a 320px proxy found seven and missed two real page loads (blank white to
+#: a pale wallpaper). 640px at crf 16 with threshold 24 recovers all nine with no extras;
+#: 480px never recovers the last one at any threshold.
+PROXY_WIDTH = 640
+PROXY_CRF = 16
+#: 20 fps puts a detected cut within 25 ms of the true frame. The motion curve still
+#: samples at 8 fps so its energies keep the scale the design thresholds were tuned on.
+PROXY_FPS = 20
+#: ContentDetector threshold. The library default is 27; 24 is what recovers the
+#: low-contrast transitions on the proxy without introducing false boundaries (measured:
+#: 9/9 and 0 extra at 640px; 21 and the adaptive detector both add a false one).
+SHOT_THRESHOLD = 24.0
 
 
 class AnalysisError(RuntimeError):
@@ -52,6 +74,8 @@ class Analysis:
     #: Time ranges where the source audio is loud enough to likely be speech.
     speech_ranges: list[tuple[float, float]]
     contact_sheets: list[str]
+    #: Seconds per stage, so slowness is measurable rather than felt.
+    timings: dict[str, float] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {
@@ -60,6 +84,7 @@ class Analysis:
             "motion_curve": [[round(t, 3), round(e, 4)] for t, e in self.motion_curve],
             "speech_ranges": [[round(a, 3), round(b, 3)] for a, b in self.speech_ranges],
             "contact_sheets": self.contact_sheets,
+            "timings": self.timings,
         }
 
 
@@ -103,6 +128,22 @@ def probe(path: Path) -> VideoInfo:
     )
 
 
+def make_proxy(path: Path, dest: Path) -> Path:
+    """Decode the source once into a small, fast-to-read proxy for analysis.
+
+    Kept in the project directory: it is a few megabytes, re-analysis reads it instead
+    of the source, and it is the natural asset for a scrubbing timeline later.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _run([
+        "ffmpeg", "-y", "-v", "error", "-i", str(path),
+        "-vf", f"fps={PROXY_FPS},scale={PROXY_WIDTH}:-2",
+        "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", str(PROXY_CRF),
+        "-pix_fmt", "yuv420p", str(dest),
+    ])
+    return dest
+
+
 def motion_curve(path: Path, fps: float = 8.0) -> list[tuple[float, float]]:
     """Mean absolute inter-frame difference, sampled at the given rate.
 
@@ -132,7 +173,7 @@ def _seconds(timecode) -> float:
     return float(value) if value is not None else float(timecode.get_seconds())
 
 
-def detect_shots(path: Path, info: VideoInfo, threshold: float = 27.0) -> list[Shot]:
+def detect_shots(path: Path, info: VideoInfo, threshold: float = SHOT_THRESHOLD) -> list[Shot]:
     """Shot boundaries via PySceneDetect's content detector, with a whole-video fallback."""
     try:
         from scenedetect import ContentDetector, detect
@@ -183,8 +224,10 @@ def detect_speech(path: Path, info: VideoInfo) -> list[tuple[float, float]]:
     if not info.has_audio:
         return []
 
+    # `-vn`: without it ffmpeg decodes the picture as well, which on a 4K source turned
+    # a one-second audio scan into eighteen.
     proc = subprocess.run(
-        ["ffmpeg", "-v", "info", "-i", str(path),
+        ["ffmpeg", "-v", "info", "-i", str(path), "-vn",
          "-af", "silencedetect=noise=-32dB:d=0.35", "-f", "null", "-"],
         capture_output=True, text=True,
     )
@@ -303,17 +346,28 @@ def analyze(path: Path, out_dir: Path) -> Analysis:
     path, out_dir = Path(path), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    info = probe(path)
-    curve = motion_curve(path)
-    shots = detect_shots(path, info)
+    timings: dict[str, float] = {}
+
+    def timed(label: str, fn):
+        started = time.perf_counter()
+        value = fn()
+        timings[label] = round(time.perf_counter() - started, 2)
+        return value
+
+    info = timed("probe", lambda: probe(path))
+    # One decode of the source; everything frame-based reads the proxy from here on.
+    proxy = timed("proxy", lambda: make_proxy(path, out_dir / "proxy.mp4"))
+    curve = timed("motion", lambda: motion_curve(proxy))
+    shots = timed("shots", lambda: detect_shots(proxy, info))
     annotate_shots(shots, curve)
-    speech = detect_speech(path, info)
+    speech = timed("speech", lambda: detect_speech(path, info))
     info.has_dialogue = bool(speech) and sum(b - a for a, b in speech) > info.duration * 0.15
-    sheets = contact_sheets(path, shots, out_dir / "contact")
+    # Contact sheets stay full resolution: they are what a person (or Claude) reads.
+    sheets = timed("sheets", lambda: contact_sheets(path, shots, out_dir / "contact"))
 
     result = Analysis(
         video=info, shots=shots, motion_curve=curve,
-        speech_ranges=speech, contact_sheets=sheets,
+        speech_ranges=speech, contact_sheets=sheets, timings=timings,
     )
     (out_dir / "analysis.json").write_text(
         json.dumps(result.to_json(), indent=2) + "\n", encoding="utf-8"

@@ -665,3 +665,33 @@ class TestWorkerPipes:
         assert not worker.is_alive(), "worker deadlocked on a full stderr pipe"
         assert outcome.get("ok"), outcome.get("error")
         assert any("render  x" in line for line in log)
+
+
+class TestProxyAnalysis:
+    """Frame analysis runs on a once-decoded proxy, not on the source twice.
+
+    PySceneDetect decoding a 4K source itself took 125 s of a 159 s analysis; the
+    motion curve decoded it again. Cut positions from the proxy must still land on the
+    known cuts, and the proxy must exist for later re-use.
+    """
+
+    def test_proxy_is_written_and_cuts_still_land(self, fixture_video, tmp_path):
+        result = analyze_mod.analyze(fixture_video, tmp_path)
+        assert (tmp_path / "proxy.mp4").exists()
+        boundaries = [s.start for s in result.shots[1:]]
+        for expected in CUT_TIMES:
+            assert any(abs(b - expected) < 0.15 for b in boundaries), \
+                f"no boundary near the {expected}s cut in {boundaries}"
+
+    def test_stage_timings_are_recorded(self, fixture_video, tmp_path):
+        result = analyze_mod.analyze(fixture_video, tmp_path)
+        assert {"probe", "proxy", "motion", "shots", "speech", "sheets"} <= set(result.timings)
+        saved = json.loads((tmp_path / "analysis.json").read_text(encoding="utf-8"))
+        assert saved["timings"]["shots"] >= 0
+
+    def test_speech_scan_does_not_decode_video(self):
+        """`-vn` is what keeps an audio scan from costing a full picture decode."""
+        import inspect
+
+        source = inspect.getsource(analyze_mod.detect_speech)
+        assert '"-vn"' in source
