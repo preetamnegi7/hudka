@@ -1,0 +1,10 @@
+The MIT licence in LICENSE covers the source code in this repository only.
+
+The AI models this software downloads and runs carry their own separate licences,
+which are not MIT and which govern what you may do with the audio they generate:
+
+  Stable Audio 3   Stability AI Community License   https://stability.ai/license
+  ACE-Step 1.5     MIT                              https://github.com/ace-step/ACE-Step-1.5
+
+See LICENSING.md for a summary and for the models this project deliberately excludes.
+Nothing in this repository is legal advice. Read the licences yourself.

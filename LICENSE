@@ -19,17 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-NOTE ON MODEL LICENCES
-
-This MIT licence covers the source code in this repository only. The AI models
-it downloads and runs carry their own separate licences, which are NOT MIT and
-which govern what you may do with the audio they generate:
-
-  Stable Audio 3   Stability AI Community License   https://stability.ai/license
-  ACE-Step 1.5     MIT                              https://github.com/ace-step/ACE-Step-1.5
-
-See LICENSING.md for a summary. Read the licences themselves before using
-generated audio commercially. Nothing in this repository is legal advice.
