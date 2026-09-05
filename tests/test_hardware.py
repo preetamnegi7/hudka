@@ -18,7 +18,7 @@ from hudka.engines.hardware import Hardware, Tier
 
 def hw(**kw) -> Hardware:
     base = dict(device="cuda", gpu_name="NVIDIA GeForce RTX 4070", total_vram_gb=12.9,
-                free_vram_gb=8.0, bf16=True, ram_gb=64.0, cores=24, torch_build="2.7.1+cu128")
+                free_vram_gb=9.0, bf16=True, ram_gb=64.0, cores=24, torch_build="2.7.1+cu128")
     base.update(kw)
     return Hardware(**base)
 
@@ -26,32 +26,35 @@ def hw(**kw) -> Hardware:
 class TestTier:
     def test_uses_free_not_total(self):
         assert hw(free_vram_gb=5.0).tier is Tier.GPU_LITE, "12.9 GB total decides nothing"
-        assert hw(free_vram_gb=8.0).tier is Tier.GPU_MEDIUM
+        assert hw(free_vram_gb=8.0).tier is Tier.GPU_LITE, "measured: medium peaks at 7.9 GB"
+        assert hw(free_vram_gb=9.0).tier is Tier.GPU_MEDIUM
         assert hw(free_vram_gb=16.5).tier is Tier.GPU_LARGE
 
     def test_cpu_is_cpu(self):
         assert hw(device="cpu", free_vram_gb=99.0).tier is Tier.CPU
 
     def test_medium_needs_ram_to_stage_the_checkpoint(self):
-        assert hw(free_vram_gb=8.0, ram_gb=16.0).tier is Tier.GPU_LITE
+        assert hw(free_vram_gb=9.0, ram_gb=16.0).tier is Tier.GPU_LITE
 
     def test_held_by_others(self):
         assert hw(total_vram_gb=12.9, free_vram_gb=7.6).held_by_others_gb == pytest.approx(5.3)
 
 
 class TestFitRule:
-    def test_need_grows_with_duration(self):
-        short, long = hardware.medium_need_gb(120.0, hw()), hardware.medium_need_gb(380.0, hw())
-        assert short == pytest.approx(7.0, abs=0.15)
-        assert long > short
+    def test_need_is_the_measured_flat_peak_plus_a_margin(self):
+        """B1 on the 4070: 30 s and 380 s beds both peaked at 7.9 GB physical. A first
+        prediction said 7.0 rising to 8.1; the constant is measured for that reason."""
+        assert hardware.medium_need_gb(30.0, hw()) == pytest.approx(8.4, abs=0.01)
+        assert hardware.medium_need_gb(380.0, hw()) == hardware.medium_need_gb(30.0, hw())
 
     def test_an_fp32_text_encoder_costs_more(self):
-        assert hardware.medium_need_gb(120.0, hw(bf16=False)) - hardware.medium_need_gb(120.0, hw()) \
-            == pytest.approx((1.13 - 0.56) * hardware.HEADROOM, abs=0.01)
+        assert hardware.medium_need_gb(30.0, hw(bf16=False)) - hardware.medium_need_gb(30.0, hw()) \
+            == pytest.approx(hardware.TEXT_ENCODER_EXTRA_FP32_GB, abs=0.001)
 
     def test_fits_is_the_need_against_free(self):
-        assert hardware.medium_fits(60.0, hw(free_vram_gb=8.0))
-        assert not hardware.medium_fits(380.0, hw(free_vram_gb=8.0))
+        assert hardware.medium_fits(60.0, hw(free_vram_gb=9.0))
+        assert hardware.medium_fits(380.0, hw(free_vram_gb=9.0)), "flat: if it fits, any length fits"
+        assert not hardware.medium_fits(60.0, hw(free_vram_gb=8.0))
         assert not hardware.medium_fits(60.0, hw(device="cpu"))
 
 
@@ -160,8 +163,8 @@ class TestDetect:
 
 class TestWords:
     def test_summary_names_the_card_and_what_is_free(self):
-        text = hardware.summary(hw(free_vram_gb=7.6))
-        assert "RTX 4070" in text and "7.6 GB free of 12.9" in text and "medium" in text
+        text = hardware.summary(hw(free_vram_gb=9.6))
+        assert "RTX 4070" in text and "9.6 GB free of 12.9" in text and "medium" in text
 
     def test_reason_blames_other_apps_when_they_hold_the_card(self):
         text = hardware.reason(hw(free_vram_gb=5.1))

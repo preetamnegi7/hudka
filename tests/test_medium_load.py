@@ -52,7 +52,7 @@ class FakeStableAudioModel:
 
 
 def roomy(**kw) -> hardware.Hardware:
-    base = dict(device="cuda", gpu_name="RTX 4070", total_vram_gb=12.9, free_vram_gb=8.0,
+    base = dict(device="cuda", gpu_name="RTX 4070", total_vram_gb=12.9, free_vram_gb=9.0,
                 bf16=True, ram_gb=64.0, cores=24)
     base.update(kw)
     return hardware.Hardware(**base)

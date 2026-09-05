@@ -18,7 +18,7 @@ from hudka.engines.hardware import Hardware, Tier
 
 
 def hw(**kw) -> Hardware:
-    base = dict(device="cuda", gpu_name="RTX 4070", total_vram_gb=12.9, free_vram_gb=8.0,
+    base = dict(device="cuda", gpu_name="RTX 4070", total_vram_gb=12.9, free_vram_gb=9.0,
                 bf16=True, ram_gb=64.0, cores=24)
     base.update(kw)
     return Hardware(**base)
@@ -26,7 +26,7 @@ def hw(**kw) -> Hardware:
 
 CPU = hw(device="cpu")
 LITE = hw(free_vram_gb=5.0)
-MEDIUM = hw(free_vram_gb=8.0)
+MEDIUM = hw(free_vram_gb=9.0)
 
 
 def plan(engine, kind, duration=30.0, *, steps=None, cfg=None, neg="", quality="auto", machine=MEDIUM, notes=None):
@@ -80,9 +80,11 @@ class TestFallbackIsPlannedNotSmuggled:
         assert p.engine == "stable-audio-3-medium" and notes == []
         assert p.extra == {"steps": 50}
 
-    def test_a_long_bed_falls_back_where_a_short_one_fits(self):
-        assert plan("stable-audio-3-medium", "music", 380.0, machine=MEDIUM).engine == "stable-audio-3-small-music"
-        assert plan("stable-audio-3-medium", "music", 60.0, machine=MEDIUM).engine == "stable-audio-3-medium"
+    def test_once_medium_fits_it_fits_any_length_it_can_generate(self):
+        """Measured flat: a 380 s bed peaks where a 30 s one does."""
+        assert plan("stable-audio-3-medium", "music", 380.0, machine=MEDIUM).engine == "stable-audio-3-medium"
+        assert plan("stable-audio-3-medium", "music", 380.0, machine=hw(free_vram_gb=8.0)).engine \
+            == "stable-audio-3-small-music"
 
     def test_medium_on_cpu_is_left_alone(self):
         """Today's behaviour: it runs, slowly. Not this planner's call to make."""

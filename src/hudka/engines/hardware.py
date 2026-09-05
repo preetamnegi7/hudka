@@ -39,26 +39,28 @@ class Tier(str, Enum):
     GPU_LARGE = "gpu-large"
 
 
-#: Free-VRAM thresholds in decimal GB. See medium_need_gb() for where 7.0 comes from.
-#: PLACEHOLDERS until the on-machine benchmark (plan step B1) replaces them with a measured
-#: line - they are derived from the checkpoint's parameter counts, not from a run.
-MEDIUM_MIN_FREE_GB = 7.0
+#: MEASURED on the development machine (RTX 4070 12.9 GB, driver 591.86, torch
+#: 2.7.1+cu128, fp16 DiT/VAE, bf16 text encoder), not derived - see docs/measurements.md.
+#: Medium's PHYSICAL footprint while generating - nvidia-smi's number, the one that decides
+#: whether the desktop stays up - is 7.9 GB and FLAT from a 30 s bed to a 380 s one: the DiT
+#: works on a fixed latent length, so duration does not move it (a 5 s cue peaks lower, at
+#: 7.2 GB). 4.95 GB of that is resident weights after loading. torch's own allocator reports
+#: 8.4 GB reserved, ~3 GB of it reclaimable cache between renders. A first prediction from
+#: parameter counts said 7.0 GB rising to 8.1; it was wrong in both shape and level, which is
+#: why these are measured.
+MEDIUM_RUN_PEAK_GB = 7.9
+MEDIUM_RESIDENT_GB = 4.95
+SMALL_RUN_PEAK_GB = 2.1          # small-music at 120 s: 2.13 GB physical, 1.14 GB resident
+RUN_MARGIN_GB = 0.5              # the desktop keeps moving underneath
+#: Without bf16 the T5Gemma text encoder lands in fp32 and costs this much more.
+TEXT_ENCODER_EXTRA_FP32_GB = 0.57
+
+#: Free-VRAM thresholds in decimal GB.
+MEDIUM_MIN_FREE_GB = MEDIUM_RUN_PEAK_GB + RUN_MARGIN_GB     # 8.4
 LARGE_MIN_FREE_GB = 16.0
 #: The float32 checkpoint (9.2 GB) and its state dict are both staged in RAM before the cast
 #: to fp16, so a 16 GB laptop stays on the small models however big its card.
 MEDIUM_MIN_RAM_GB = 20.0
-
-#: Medium's footprint, from the safetensors header: 2.305 B parameters (DiT 1.453 B + VAE
-#: 0.852 B) at 2 bytes. The T5Gemma text encoder (281.6 M) is NOT reached by the model's
-#: fp16 cast - it lives in conditioner.__dict__, not as a submodule - so it costs 1.13 GB in
-#: fp32 and 0.56 GB once cast to bf16, its native dtype. Activations follow Stability's
-#: published 5.07 -> 6.52 GB across 5 -> 380 s.
-MEDIUM_WEIGHTS_GB = 4.61
-TEXT_ENCODER_GB = {True: 0.56, False: 1.13}
-CUDA_CONTEXT_GB = 0.40           # 0.18 measured bare, the rest cuBLAS/cuDNN workspaces
-ACTIVATION_BASE_GB = 0.30
-ACTIVATION_GB_PER_S = 0.0039
-HEADROOM = 1.10                  # allocator fragmentation and the desktop moving underneath
 
 MEDIUM = "stable-audio-3-medium"
 SMALL_FOR_KIND = {
@@ -105,10 +107,13 @@ class Hardware:
 
 
 def medium_need_gb(duration_s: float, hw: Hardware) -> float:
-    """Free VRAM medium needs to generate a bed this long, on this machine."""
-    seconds = max(0.0, min(duration_s, 380.0))
-    return (MEDIUM_WEIGHTS_GB + TEXT_ENCODER_GB[hw.bf16] + CUDA_CONTEXT_GB
-            + ACTIVATION_BASE_GB + ACTIVATION_GB_PER_S * seconds) * HEADROOM
+    """Free VRAM medium needs to generate a bed this long, on this machine.
+
+    Measured flat: a 30 s bed and a 380 s bed peak at the same 7.9 GB, so `duration_s` is
+    kept for the callers' sake and does not move the answer. Without bf16 the text encoder
+    costs 0.57 GB more."""
+    del duration_s
+    return MEDIUM_RUN_PEAK_GB + (0.0 if hw.bf16 else TEXT_ENCODER_EXTRA_FP32_GB) + RUN_MARGIN_GB
 
 
 def medium_fits(duration_s: float, hw: Hardware) -> bool:
@@ -239,7 +244,9 @@ def _force(hw: Hardware, tier_name: str) -> Hardware:
         return hw
     if tier is Tier.CPU:
         return replace(hw, device="cpu", free_source="forced")
-    free = {Tier.GPU_LITE: 4.0, Tier.GPU_MEDIUM: 8.0, Tier.GPU_LARGE: 20.0}[tier]
+    # Derived from the thresholds, so a re-measured constant cannot strand this.
+    free = {Tier.GPU_LITE: MEDIUM_MIN_FREE_GB - 3.0, Tier.GPU_MEDIUM: MEDIUM_MIN_FREE_GB + 1.0,
+            Tier.GPU_LARGE: LARGE_MIN_FREE_GB + 4.0}[tier]
     return replace(hw, device="cuda", gpu_name=hw.gpu_name or "forced GPU",
                    total_vram_gb=max(hw.total_vram_gb, free), free_vram_gb=free,
                    free_source="forced", bf16=True, ram_gb=max(hw.ram_gb, MEDIUM_MIN_RAM_GB))
@@ -286,7 +293,7 @@ def summary(hw: Hardware) -> str:
     """One line for the header: what the card is, what is free, what that buys."""
     if hw.device != "cuda":
         return "No NVIDIA GPU in use · small models, fast steps"
-    quality = {Tier.GPU_LARGE: "best quality (medium, any length)",
+    quality = {Tier.GPU_LARGE: "best quality (medium, room to spare)",
                Tier.GPU_MEDIUM: "best quality (medium beds)",
                Tier.GPU_LITE: "small models"}[hw.tier]
     return (f"{hw.gpu_name.replace('NVIDIA GeForce ', '')} · {hw.free_vram_gb:.1f} GB free "
@@ -303,8 +310,8 @@ def reason(hw: Hardware) -> str:
     if hw.tier is Tier.GPU_LARGE:
         return f"{hw.free_vram_gb:.1f} GB free: the medium model fits at any length."
     if hw.tier is Tier.GPU_MEDIUM:
-        return (f"{hw.free_vram_gb:.1f} GB free: the medium model fits beds up to about "
-                f"{_fits_up_to(hw):.0f}s; longer ones fall back to the small model.")
+        return (f"{hw.free_vram_gb:.1f} GB free: the medium model fits (it needs about "
+                f"{medium_need_gb(0.0, hw):.1f} GB while generating).")
     need = medium_need_gb(120.0, hw)
     if hw.ram_gb and hw.ram_gb < MEDIUM_MIN_RAM_GB:
         return (f"Only {hw.ram_gb:.0f} GB of RAM: loading the medium model stages a 9 GB "
@@ -317,10 +324,3 @@ def reason(hw: Hardware) -> str:
     return (f"{hw.total_vram_gb:.1f} GB card: the medium model needs about {need:.1f} GB "
             f"free, so the small models are used.")
 
-
-def _fits_up_to(hw: Hardware) -> float:
-    """Longest bed medium can generate in the VRAM free right now."""
-    for seconds in range(380, 0, -10):
-        if medium_fits(float(seconds), hw):
-            return float(seconds)
-    return 0.0

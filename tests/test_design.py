@@ -290,7 +290,7 @@ class TestBedEngineFollowsTheMachine:
         from hudka.engines import hardware
 
         base = dict(device="cuda", gpu_name="RTX 4070", total_vram_gb=12.9,
-                    free_vram_gb=8.0, bf16=True, ram_gb=64.0, cores=24)
+                    free_vram_gb=9.0, bf16=True, ram_gb=64.0, cores=24)
         base.update(kw)
         return hardware.Hardware(**base)
 
@@ -299,12 +299,12 @@ class TestBedEngineFollowsTheMachine:
 
         assert engines.pick_bed_engine(60.0, self._hw()) == "stable-audio-3-medium"
 
-    def test_a_bed_too_long_for_the_free_vram_falls_back(self):
+    def test_length_does_not_change_the_answer_once_it_fits(self):
         from hudka import engines
 
-        # 8 GB free fits a 120 s medium bed but not the activations of a 380 s one.
-        assert engines.pick_bed_engine(380.0, self._hw()) == "stable-audio-3-small-music"
-        assert engines.pick_bed_engine(380.0, self._hw(free_vram_gb=20.0)) == "stable-audio-3-medium"
+        # Measured flat: a 380 s medium bed peaks where a 30 s one does (7.9 GB).
+        assert engines.pick_bed_engine(380.0, self._hw()) == "stable-audio-3-medium"
+        assert engines.pick_bed_engine(380.0, self._hw(free_vram_gb=8.0)) == "stable-audio-3-small-music"
 
     def test_a_busy_card_stays_small_whatever_its_total(self):
         from hudka import engines
