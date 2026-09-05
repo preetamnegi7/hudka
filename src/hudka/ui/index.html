@@ -10,6 +10,8 @@
     --bg:#0e0f13; --panel:#16181f; --raise:#1c1f28; --line:#272b36; --text:#e6e8ef;
     --dim:#8b91a3; --faint:#5d6474; --accent:#ffd666; --sfx:#6ea8fe; --music:#7ee0a8;
     --amb:#c79bf0; --speech:#39404f; --danger:#ff7a7a; --ok:#7ee0a8;
+    --top-h:150px; --dock-h:180px;
+    --tl-h:200px; --tl-names-w:132px; --lane-h:38px; --lane-h-sfx:26px; --tl-sbw:0px;
   }
   * { box-sizing:border-box; }
   html,body { height:100%; }
@@ -39,7 +41,7 @@
   .mark { display:inline-flex; color:var(--accent); line-height:0; }
 
   .view { padding:18px 22px 0; }
-  #viewProject { padding-bottom:24px; }
+  #viewProject { padding-top:12px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px; }
   .panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.09em;
     color:var(--dim); margin:0 0 12px; font-weight:650; }
@@ -64,53 +66,205 @@
   .badge.busy { color:var(--accent); border-color:#ffd66655; }
 
   /* Steps */
-  .steps { display:flex; gap:6px; margin-bottom:16px; flex-wrap:wrap; }
-  .step { flex:1; min-width:130px; border:1px solid var(--line); border-radius:9px; padding:10px 12px;
-    background:var(--panel); position:relative; }
+  .steps { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+  .step { flex:1; min-width:130px; border:1px solid var(--line); border-radius:9px;
+    padding:5px 11px; background:var(--panel); position:relative; overflow:hidden;
+    display:flex; gap:9px; align-items:baseline; }
   .step.done { border-color:#7ee0a840; }
   .step.now { border-color:var(--accent); }
-  .step .n { font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint); font-weight:650; }
+  .step .n { font-size:10.5px; text-transform:uppercase; letter-spacing:.08em;
+    color:var(--faint); font-weight:650; white-space:nowrap; }
   .step.done .n { color:var(--ok); }
   .step.now .n { color:var(--accent); }
-  .step .t { font-size:13px; margin-top:2px; }
+  /* paintSteps writes proj.source_name in here; a long filename would wrap the flex item
+     to two lines and cancel the whole saving. */
+  .step .t { font-size:13px; margin-top:0; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-  main.editor { display:grid; grid-template-columns:minmax(420px,1fr) minmax(430px,760px);
-    gap:18px; align-items:start; }
-  @media (max-width:1020px) { main.editor { grid-template-columns:1fr; } }
-  .sticky { position:sticky; top:66px; overflow-y:auto;
-    max-height:calc(100vh - 82px - var(--dock-h, 180px)); }
-  video { width:100%; border-radius:8px; background:#000; display:block;
-    aspect-ratio:16/9; max-height:38vh; object-fit:contain; }
+  /* The editor is a fixed-height, two-pane workspace: the PAGE does not scroll in
+     project view, every scroll happens inside a pane. --top-h is everything above the
+     editor (header + view padding + banner + steps rail); --dock-h is the timeline dock
+     below it. Both are measured by reserveDockRoom(), never guessed. */
+  main.editor { display:grid;
+    grid-template-columns:minmax(400px,1fr) clamp(560px, 40vw, 1240px);
+    gap:18px; align-items:stretch;
+    height:calc(100vh - var(--top-h, 150px) - var(--dock-h, 180px));
+    min-height:440px; }
 
-  /* Timeline: a scrolling multi-track view. Lane labels stay pinned while the tracks
-     scroll under them, so a wide zoom never loses which lane is which. */
+  /* why min-height:0 / min-width:0 everywhere down to the scroller: a grid or flex
+     child's automatic minimum size is its CONTENT size, so without these the panes
+     refuse to shrink, push past the viewport, and no descendant overflow:auto ever
+     engages - the classic "my overflow:auto does nothing" trap. min-width:0 does the
+     same job horizontally for long prompts and clip titles. */
+  main.editor > section { display:flex; min-height:0; min-width:0; }
+  main.editor > section > .panel { flex:1; display:flex; flex-direction:column;
+    min-height:0; min-width:0; }
+
+  /* Stage (left): a program monitor. Fixed slots top and bottom, picture takes the
+     rest. Nothing here scrolls, ever - that is the point of moving the options out. */
+  .stage.panel { padding:12px 14px; }
+  .stagehead { flex:0 0 auto; margin-bottom:8px; }
+  .stagefoot { flex:0 0 auto; height:22px; overflow:hidden; }
+  .stagebox { flex:1 1 auto; min-height:120px; margin:2px 0;
+    display:flex; align-items:center; justify-content:center; }
+  /* Both dimensions auto and both capped: the element box then equals the picture, so
+     the native control bar sits exactly under it and there are no bars inside the box.
+     Measured against the ideal contain-fit at 1366/1600/1920/2560/3840 - this is the only
+     form that matches at all five. Pinning either axis fails at one end: height:100%
+     is definite and max-width cannot shrink it (2508x1645 instead of 2508x1411 at 4K),
+     and width:100% pillarboxes wherever the pane is wider than the picture (714x373
+     instead of 664x373 at 1366). aspect-ratio:16/9 and paintPlayer's inline
+     player.style.aspectRatio still do their job: they shape the box before metadata
+     arrives, after which the video's own natural size takes over. */
+  video { max-width:100%; max-height:100%; width:auto; height:auto;
+    aspect-ratio:16/9; object-fit:contain;
+    border-radius:8px; background:#000; display:block; }
+
+  /* Inspector (right): tabs over independently scrolling panes, with a footer OUTSIDE
+     them so Render / Save / Download and the job log stay put on every tab. */
+  .insp.panel { padding:0; overflow:hidden; }
+  .tabs { flex:0 0 auto; display:flex; align-items:center; padding:7px 10px 0;
+    border-bottom:1px solid var(--line); }
+  .tabstrip { display:flex; gap:2px; }
+  .tab { background:transparent; border:1px solid transparent; border-bottom:none;
+    border-radius:7px 7px 0 0; padding:6px 13px; margin-bottom:-1px; color:var(--dim);
+    font-size:12px; font-weight:650; letter-spacing:.04em; text-transform:uppercase; }
+  .tab:hover { color:var(--text); }
+  .tab[aria-selected="true"] { color:var(--text); background:var(--panel);
+    border-color:var(--line); }
+  .tab:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+
+  /* why the panes scroll: .tabpanes is a flex item with a definite flexed height inside
+     a panel whose height comes from the grid row, so an absolutely positioned child with
+     inset:0 gets exactly that height - the scroller can never be stretched by its own
+     content, however long the cue list is. overscroll-behavior:contain stops a wheel at
+     the end of the list from chaining out to the document. */
+  .tabpanes { flex:1 1 auto; min-height:200px; position:relative; }
+  .tabpane { position:absolute; inset:0; overflow-y:auto; overscroll-behavior:contain;
+    padding:0 14px 12px; }
+  .tabpane[hidden] { display:none; }
+  .tabpane:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
+  #paneMix, #paneOutput { padding-top:12px; }
+  @media (max-height:820px) { .tabpanes { min-height:150px; } }
+
+  /* The action row is FIRST in the footer's DOM and flex:0 0 auto, so it is structurally
+     the last thing that can be squeezed; only the banner+log region below it flexes, and
+     it scrolls rather than clipping if a short window leaves it nothing. */
+  .inspfoot { flex:0 1 auto; min-height:0; max-height:55%;
+    display:flex; flex-direction:column;
+    border-top:1px solid var(--line); background:var(--raise);
+    padding:9px 14px; border-radius:0 0 11px 11px; }
+  .footact { flex:0 0 auto; }
+  .footscroll { flex:0 1 auto; min-height:0; overflow:auto; }
+  .footscroll:not(:empty) { margin-top:9px; }
+  .inspfoot .banner { margin:0 0 8px; padding:8px 11px; font-size:12px; }
+  .inspfoot .log { max-height:min(104px, 11vh); }
+
+  /* Adding a cue must not mean scrolling past thirty cards to reach the buttons.
+     why sticky works here: .tabpane is the scrollport, and a sticky child sticks to its
+     nearest scrollport's padding box - top:0 pins it flush to the visible top edge. The
+     pane's top padding is 0 (the bar supplies it), so no negative margins are needed and
+     nothing overflows sideways. */
+  .cuebar { position:sticky; top:0; z-index:3; display:flex; gap:8px; flex-wrap:wrap;
+    padding:12px 0 9px; background:var(--panel); }
+
+  @media (max-width:1060px) {
+    main.editor { grid-template-columns:1fr; height:auto; }
+    main.editor > section { display:block; }
+    .insp.panel { overflow:visible; }
+    .tabpanes { position:static; min-height:0; }
+    .tabpane { position:static; overflow:visible; }
+    .inspfoot { max-height:none; }
+    .stagebox { display:block; }
+    video { height:auto; max-height:52vh; }
+  }
+
+  /* Timeline: a fixed-height, two-axis scrolling multi-track view. The ruler strip and
+     the track-name column are FOLLOWERS: overflow is `clip` on both, so they are not
+     scroll containers at all and can never emit a scroll event or be scrolled by the
+     browser to reveal a focused button. Only #tlScroll scrolls, and it moves the other
+     two by transform - the sync is one-way by construction, so there is no reentrancy
+     flag to get wrong. (overflow:hidden would NOT do: it is still a scroll container,
+     and focusing an off-screen M button in the name column would desync it for good.) */
   .tldock { position:sticky; bottom:0; z-index:15; padding:0 22px 14px;
     background:linear-gradient(180deg,transparent,var(--bg) 22px); }
   .tlwrap { border:1px solid var(--line); border-radius:8px; background:#0d0f14;
     overflow:hidden; box-shadow:0 -10px 24px #0e0f13cc; }
-  .tlwrap.collapsed .tlbody { display:none; }
+  .tlwrap.collapsed .tlbody,
+  .tlwrap.collapsed .tlhead,
+  .tlwrap.collapsed .tlresize { display:none; }
+
+  .tlresize { height:7px; cursor:ns-resize; background:#0b0d12; position:relative;
+    border-bottom:1px solid var(--line); }
+  .tlresize::after { content:''; position:absolute; left:50%; top:3px; width:46px;
+    margin-left:-23px; height:1px; background:var(--line); }
+  .tlresize:hover::after, .tlresize:focus-visible::after { background:var(--accent); }
+  body.rowresize, body.rowresize * { cursor:ns-resize !important; user-select:none; }
+
   .tlbar { display:flex; align-items:center; gap:10px; padding:6px 9px;
     border-bottom:1px solid var(--line); }
-  .tlbody { display:flex; align-items:stretch; }
-  .tlnames { width:64px; flex:0 0 64px; border-right:1px solid var(--line); background:#0b0d12; }
-  .tlnames .pad { height:20px; border-bottom:1px solid var(--line); }
-  .tl-name { height:38px; border-top:1px solid #1c202b; display:flex; align-items:center;
-    padding-left:8px; font-size:9.5px; letter-spacing:.07em; text-transform:uppercase;
-    color:var(--faint); user-select:none; }
-  .tl-name.sfx { height:26px; }
-  .tlscroll { overflow-x:auto; overflow-y:hidden; position:relative; flex:1; min-width:0; }
-  .tlinner { position:relative; min-width:100%; }
-  .tl-ruler { height:20px; position:relative; border-bottom:1px solid var(--line);
-    background:#0b0d12; }
+  @media (max-width:1180px) { .tlbar .legend { display:none; } }
+
+  .tlhead { display:flex; align-items:stretch; border-bottom:1px solid var(--line); }
+  .tlcorner { width:var(--tl-names-w); flex:0 0 var(--tl-names-w);
+    border-right:1px solid var(--line); background:#0b0d12; }
+  .tlrulerwrap { flex:1; min-width:0; overflow:clip; position:relative;
+    margin-right:var(--tl-sbw); cursor:col-resize; }
+
+  /* why the tracks scroll: .tlbody has a DEFINITE height (--tl-h), align-items:stretch
+     gives .tlscroll that same definite cross size, so overflow:auto has something to
+     overflow against instead of growing. min-width:0 stops the flex item refusing to
+     shrink below its 4000px-wide content. overscroll-behavior:contain stops a wheel over
+     a short track stack from chaining out and scrolling the page under the dock. */
+  .tlbody { display:flex; align-items:stretch; height:var(--tl-h); }
+  .tlnames { width:var(--tl-names-w); flex:0 0 var(--tl-names-w); position:relative;
+    border-right:1px solid var(--line); background:#0b0d12; overflow:clip; }
+  .tlnamesinner { position:absolute; top:0; left:0; right:0; will-change:transform; }
+  .tlscroll { overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable;
+    position:relative; flex:1; min-width:0; }
+  .tlscroll::-webkit-scrollbar { width:11px; height:11px; }
+  .tlscroll::-webkit-scrollbar-thumb { background:#2c3140; border-radius:6px;
+    border:3px solid #0d0f14; }
+  .tlscroll::-webkit-scrollbar-corner { background:#0d0f14; }
+  /* min-height:100% resolves because .tlscroll's height is definite (above). */
+  .tlinner { position:relative; min-width:100%; min-height:100%; }
+
+  .tl-ruler { height:20px; position:relative; background:#0b0d12; will-change:transform; }
   .tl-tick { position:absolute; top:0; height:100%; border-left:1px solid #2a2f3d;
     font-size:9.5px; color:var(--faint); padding-left:3px; line-height:20px;
     user-select:none; white-space:nowrap; }
-  .tl-lane { position:relative; height:38px; border-top:1px solid #1c202b; }
-  .tl-lane.sfx { height:26px; }
+  .tl-tick.minor { height:6px; top:auto; bottom:0; border-color:#232836; padding:0; }
+  .tl-playtop { position:absolute; top:0; bottom:0; width:1.5px; background:var(--accent);
+    pointer-events:none; z-index:3; }
+  .tl-playtop::before { content:''; position:absolute; top:0; left:-4px;
+    border:4px solid transparent; border-top:5px solid var(--accent); }
+
+  /* Track headers, beside the lanes they name. */
+  .tl-name { height:var(--lane-h); border-top:1px solid #1c202b; display:flex;
+    align-items:center; gap:5px; padding:0 5px 0 6px; color:var(--dim);
+    user-select:none; cursor:pointer; }
+  .tl-name.sfx { height:var(--lane-h-sfx); }
+  .tl-name:hover { background:#12151d; }
+  .tl-name.sel { background:#171a23; color:var(--text); }
+  .tl-name.dim { opacity:.3; }
+  .tl-chip { width:3px; flex:0 0 3px; align-self:stretch; margin:5px 0; border-radius:2px; }
+  .tl-nametext { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; font-size:10.5px; letter-spacing:.03em; }
+  .tl-name.sfx .tl-nametext { font-size:9.5px; }
+  .tl-btn { flex:0 0 16px; width:16px; height:16px; padding:0; font-size:9px;
+    line-height:14px; border-radius:4px; background:transparent;
+    border:1px solid var(--line); color:var(--faint); }
+  .tl-btn:hover { color:var(--text); }
+  .tl-btn.on { background:var(--danger); border-color:var(--danger); color:#1a0000; font-weight:700; }
+  .tl-btn.solo { background:var(--accent); border-color:var(--accent); color:#191400; font-weight:700; }
+
+  .tl-lane { position:relative; height:var(--lane-h); border-top:1px solid #1c202b; }
+  .tl-lane.sfx { height:var(--lane-h-sfx); }
+  .tl-lane.dim { opacity:.3; }
   .tl-shot { position:absolute; top:0; bottom:0; border-left:1px solid #39405255;
     pointer-events:none; z-index:1; }
-  .tl-speech { position:absolute; top:4px; height:30px; background:var(--speech);
-    border-radius:3px; opacity:.55; }
+  .tl-speech { position:absolute; top:4px; height:calc(var(--lane-h) - 8px);
+    background:var(--speech); border-radius:3px; opacity:.55; }
   .tl-clip { position:absolute; border-radius:4px; cursor:grab; overflow:hidden;
     font-size:10px; line-height:1.2; padding:2px 4px; color:#0d0f14; font-weight:600;
     white-space:nowrap; text-overflow:ellipsis; border:1px solid transparent; z-index:2; }
@@ -118,8 +272,8 @@
   .tl-clip.sel { border-color:#fff; box-shadow:0 0 0 1px var(--accent); z-index:4; }
   .tl-clip.dragging { cursor:grabbing; opacity:.85; }
   .tl-clip.muted { opacity:.32; }
-  .tl-clip.bed { top:4px; height:30px; }
-  .tl-clip.hit { top:3px; height:20px; min-width:3px; padding:0; }
+  .tl-clip.bed { top:4px; height:calc(var(--lane-h) - 8px); }
+  .tl-clip.hit { top:3px; height:calc(var(--lane-h-sfx) - 6px); min-width:3px; padding:0; }
   .tl-grip { position:absolute; top:0; bottom:0; width:6px; cursor:ew-resize; z-index:5; }
   .tl-grip.l { left:0; } .tl-grip.r { right:0; }
   .tl-play { position:absolute; top:0; bottom:0; width:1.5px; background:var(--accent);
@@ -127,10 +281,45 @@
   .legend { display:flex; gap:14px; font-size:11px; color:var(--dim); margin-top:8px; flex-wrap:wrap; }
   .sw { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
 
+  /* Focus mode. The header and the step rail are navigation, not editing: hiding them
+     hands ~100px back to the picture and the tracks. This is NOT the player's own
+     fullscreen button, which fills the screen with video and no timeline. The inspector
+     deliberately stays: hiding it would hide #btnAct and #jobBox mid-render. */
+  body.fs header, body.fs .steps { display:none; }
+  body.fs #viewProject { padding-top:10px; }
+  body.fs #focusExit { display:flex; }
+  #focusExit { display:none; position:fixed; top:8px; right:22px; z-index:30;
+    align-items:center; gap:10px; padding:4px 6px 4px 14px; border-radius:20px;
+    background:var(--panel); border:1px solid var(--line); }
+
   /* Cues */
   .ghead { display:flex; align-items:center; gap:8px; margin:16px 0 8px; }
   .ghead h3 { font-size:11px; margin:0; color:var(--dim); text-transform:uppercase; letter-spacing:.09em; }
   .cue { border:1px solid var(--line); border-radius:9px; padding:11px; margin-bottom:9px; background:#12141b; }
+
+  /* Cue cards flow into as many columns as the inspector is wide enough for. 520px is
+     where a card's five-field row still fits on one line; min(520px,100%) is the
+     idiomatic floor - plain minmax(520px,1fr) never yields a track under 520px and
+     therefore forces a horizontal scrollbar inside the pane at the 560px inspector
+     minimum, and on a phone. */
+  #cues { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(520px,100%), 1fr));
+    gap:9px; align-content:start; }
+  #cues .ghead { grid-column:1 / -1; margin:10px 0 0; }
+  #cues .ghead:first-child { margin-top:0; }
+  #cues > p { grid-column:1 / -1; }
+  #cues .cue { margin-bottom:0; }     /* gap replaces the per-card margin */
+
+  /* Compact density: everything but the cue you are editing collapses to one line, so
+     the list behaves like a project panel - browse the list, edit one. */
+  .cue-sum { display:none; }
+  #cues.dense .cue { padding:7px 9px; }
+  #cues.dense .cue-top { margin-bottom:0; }
+  #cues.dense .cue-sum { display:block; flex:1; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #cues.dense .cue:not(.sel) > textarea,
+  #cues.dense .cue:not(.sel) > .fields,
+  #cues.dense .cue:not(.sel) > details.adv,
+  #cues.dense .cue:not(.sel) > .note { display:none; }
   .cue.bad { border-color:var(--danger); background:#ff7a7a08; }
   .cue.sel { border-color:var(--accent); }
   .cue-top { display:flex; align-items:center; gap:7px; margin-bottom:8px; }
@@ -225,30 +414,67 @@
 
 <!-- ============================ EDITOR ============================ -->
 <div class="view hidden" id="viewProject">
+  <div id="focusExit">
+    <span class="tiny muted">Hudka &middot; <span id="focusName"></span></span>
+    <button class="sm ghost" id="btnFocusOut">Exit full screen (Esc)</button>
+  </div>
   <div id="projBanner"></div>
   <div class="steps" id="steps"></div>
 
   <main class="editor">
     <section>
-      <div class="panel sticky">
-        <div class="row" style="margin-bottom:10px">
+      <div class="panel stage">
+        <div class="row stagehead">
           <h2 style="margin:0">Preview</h2>
           <div class="spacer"></div>
           <label class="tiny muted" id="abWrap"><input type="checkbox" id="ab" style="vertical-align:-2px"> original</label>
+          <button class="ghost sm" id="btnFull" title="Full screen (Shift+F)" aria-label="Full screen">&#9974;</button>
         </div>
-        <video id="player" controls preload="metadata"></video>
-
-        <div class="fields" style="margin-top:15px">
-          <div class="field"><label>preset</label><select id="preset"></select></div>
-          <div class="field"><label>target LUFS</label><input type="number" id="lufs" step="0.5" min="-40" max="-5"></div>
-          <div class="field"><label>keep original audio</label>
-            <select id="keepOriginal"><option value="true">yes</option><option value="false">no</option></select></div>
+        <div class="stagebox">
+          <video id="player" controls preload="metadata"></video>
         </div>
-        <div id="presetHint" class="tiny muted" style="margin-top:9px"></div>
+        <div class="stagefoot row tiny muted">
+          <span id="stageCue"></span><div class="spacer"></div>
+          <span id="stageTime" class="mono"></span>
+        </div>
+      </div>
+    </section>
 
-        <details class="adv" style="margin-top:12px">
-          <summary>Mix balance</summary>
-          <div class="advbody">
+    <section>
+      <div class="panel insp">
+        <div class="tabs">
+          <div class="tabstrip" role="tablist" aria-label="Project panels">
+            <button class="tab" role="tab" id="tabCues" data-tab="cues"
+                    aria-controls="paneCues" aria-selected="true">Cues <span id="cueCount" class="tiny muted"></span></button>
+            <button class="tab" role="tab" id="tabMix" data-tab="mix"
+                    aria-controls="paneMix" aria-selected="false">Mix</button>
+            <button class="tab" role="tab" id="tabOutput" data-tab="output"
+                    aria-controls="paneOutput" aria-selected="false">Output</button>
+          </div>
+          <div class="spacer"></div>
+          <label class="tiny muted" id="denseWrap"><input type="checkbox" id="dense" style="vertical-align:-2px"> compact</label>
+        </div>
+
+        <div class="tabpanes">
+          <div class="tabpane" role="tabpanel" id="paneCues" aria-labelledby="tabCues" tabindex="0">
+            <div class="cuebar">
+              <button class="ghost sm" data-add="sfx">+ effect</button>
+              <button class="ghost sm" data-add="music">+ music bed</button>
+              <button class="ghost sm" data-add="ambience">+ ambience</button>
+            </div>
+            <div id="cues"></div>
+          </div>
+
+          <div class="tabpane" role="tabpanel" id="paneMix" aria-labelledby="tabMix" tabindex="0" hidden>
+            <div class="fields">
+              <div class="field"><label>preset</label><select id="preset"></select></div>
+              <div class="field"><label>target LUFS</label><input type="number" id="lufs" step="0.5" min="-40" max="-5"></div>
+              <div class="field"><label>keep original audio</label>
+                <select id="keepOriginal"><option value="true">yes</option><option value="false">no</option></select></div>
+            </div>
+            <div id="presetHint" class="tiny muted" style="margin-top:9px"></div>
+
+            <div class="advlabel" style="margin-top:20px">bus trims &mdash; on top of each cue's own gain</div>
             <div class="fields">
               <div class="field"><label>music bus dB</label>
                 <input type="number" id="musicBus" step="1" min="-60" max="12"></div>
@@ -257,77 +483,82 @@
               <div class="field"><label>ambience bus dB</label>
                 <input type="number" id="ambBus" step="1" min="-60" max="12"></div>
               <div class="field"><label>duck depth dB</label>
-                <input type="number" id="duckDepth" step="1" min="-24" max="0"
-                       placeholder="preset"></div>
+                <input type="number" id="duckDepth" step="1" min="-24" max="0" placeholder="preset"></div>
             </div>
             <div class="tiny muted" style="margin-top:7px">
-              Whole-bus trims, on top of each cue's own gain — the fastest way to rebalance
-              without touching cues. Leave duck empty to use the preset's.
+              The fastest way to rebalance without touching cues. Leave duck empty to use the preset's.
             </div>
           </div>
-        </details>
 
-        <div class="row wrap" style="margin-top:16px; gap:8px">
-          <button class="primary" id="btnAct"></button>
-          <button class="ghost" id="btnSave">Save</button>
-          <label class="tiny muted" id="previewWrap"><input type="checkbox" id="previewMode" style="vertical-align:-2px"> preview (placeholder tones)</label>
-        </div>
-        <div id="previewBanner" class="banner warn hidden" style="margin:10px 0 0">
-          <strong>Preview mode</strong> &mdash; renders metronome-style placeholder tones so
-          you can check timing and balance. <strong>Not real audio.</strong> Untick to
-          generate real sound.
-        </div>
-
-        <div id="jobBox" class="hidden" style="margin-top:14px">
-          <div class="row tiny muted" style="margin-bottom:6px">
-            <span class="spin" id="jobSpin"></span><span id="jobLabel"></span>
-            <div class="spacer"></div><span id="jobTime" class="mono"></span>
+          <div class="tabpane" role="tabpanel" id="paneOutput" aria-labelledby="tabOutput" tabindex="0" hidden>
+            <div id="renderReport" class="tiny muted"></div>
+            <div class="advlabel" style="margin-top:18px">contact sheets</div>
+            <div id="contact"></div>
           </div>
-          <div class="log" id="jobLog"></div>
         </div>
 
-        <div class="row wrap" style="margin-top:14px; gap:8px" id="downloads"></div>
-
-        <details style="margin-top:14px">
-          <summary class="tiny muted" style="cursor:pointer">Contact sheets</summary>
-          <div id="contact"></div>
-        </details>
-      </div>
-    </section>
-
-    <section>
-      <div class="panel">
-        <div class="row" style="margin-bottom:6px">
-          <h2 style="margin:0">Cues</h2>
-          <span id="cueCount" class="tiny muted"></span>
-        </div>
-        <div id="cues"></div>
-        <div class="ghead" style="margin-top:16px">
-          <button class="ghost sm" data-add="sfx">+ effect</button>
-          <button class="ghost sm" data-add="music">+ music bed</button>
-          <button class="ghost sm" data-add="ambience">+ ambience</button>
+        <div class="inspfoot">
+          <div class="row wrap footact" style="gap:8px">
+            <button class="primary" id="btnAct"></button>
+            <button class="ghost" id="btnSave">Save</button>
+            <label class="tiny muted" id="previewWrap"><input type="checkbox" id="previewMode" style="vertical-align:-2px"> preview (placeholder tones)</label>
+            <div class="spacer"></div>
+            <div class="row wrap" style="gap:8px" id="downloads"></div>
+          </div>
+          <div class="footscroll">
+            <div id="previewBanner" class="banner warn hidden">
+              <strong>Preview mode</strong> &mdash; renders metronome-style placeholder tones so
+              you can check timing and balance. <strong>Not real audio.</strong> Untick to
+              generate real sound.
+            </div>
+            <div id="jobBox" class="hidden">
+              <div class="row tiny muted" style="margin-bottom:6px">
+                <span class="spin" id="jobSpin"></span><span id="jobLabel"></span>
+                <div class="spacer"></div><span id="jobTime" class="mono"></span>
+              </div>
+              <div class="log" id="jobLog"></div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
   </main>
 
   <div class="tldock hidden">
-        <div class="tlwrap">
+    <div class="tlwrap">
+      <div class="tlresize" id="tlResize" role="separator" aria-orientation="horizontal"
+           tabindex="0" aria-label="Resize the timeline"
+           title="Drag to resize &middot; double-click to fit every track"></div>
       <div class="tlbar">
         <span class="tiny muted" id="tlInfo"></span>
-            <span class="legend" style="margin:0"><span><i class="sw" style="background:var(--music)"></i>music</span><span><i class="sw" style="background:var(--amb)"></i>ambience</span><span><i class="sw" style="background:var(--sfx)"></i>effect</span><span><i class="sw" style="background:var(--speech)"></i>speech</span></span>
+        <span class="legend" style="margin:0"><span><i class="sw" style="background:var(--music)"></i>music</span><span><i class="sw" style="background:var(--amb)"></i>ambience</span><span><i class="sw" style="background:var(--sfx)"></i>effect</span><span><i class="sw" style="background:var(--speech)"></i>speech</span></span>
         <div class="spacer"></div>
-        <button class="sm ghost" id="tlOut" title="Zoom out">&minus;</button>
-        <span class="tiny muted mono" id="tlZoom" style="min-width:52px;text-align:center"></span>
-        <button class="sm ghost" id="tlIn" title="Zoom in">+</button>
-        <button class="sm ghost" id="tlFit" title="Fit the whole video">Fit</button>
-            <button class="sm ghost" id="tlHide" title="Collapse the timeline">&#9660;</button>
+        <span class="tiny mono muted" id="tlTime" style="min-width:120px;text-align:right"></span>
+        <button class="sm ghost" id="tlOut" title="Zoom out (-)">&minus;</button>
+        <span class="tiny muted mono" id="tlZoom" style="min-width:56px;text-align:center"></span>
+        <button class="sm ghost" id="tlIn" title="Zoom in (=)">+</button>
+        <button class="sm ghost" id="tlFit" title="Fit the whole video (\)">Fit</button>
+        <button class="sm ghost" id="tlSel" title="Zoom to the selected cue (F)">Sel</button>
+        <button class="sm ghost" id="tlSize" title="Track height (small / medium / large)">&#9776;</button>
+        <button class="sm ghost" id="tlHide" title="Collapse the timeline">&#9660;</button>
       </div>
+
+      <!-- #tlRuler is a PERSISTENT container: it owns #tlTicks and #tlPlayTop. Nothing
+           may ever set innerHTML on it - clear #tlTicks instead. -->
+      <div class="tlhead">
+        <div class="tlcorner"></div>
+        <div class="tlrulerwrap" id="tlRulerWrap">
+          <div class="tl-ruler" id="tlRuler">
+            <div id="tlTicks"></div>
+            <div class="tl-playtop" id="tlPlayTop"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="tlbody">
-        <div class="tlnames" id="tlNames"><div class="pad"></div></div>
+        <div class="tlnames" id="tlNamesWrap"><div class="tlnamesinner" id="tlNames"></div></div>
         <div class="tlscroll" id="tlScroll">
           <div class="tlinner" id="tlInner">
-            <div class="tl-ruler" id="tlRuler"></div>
             <div id="tlLanes"></div>
             <div class="tl-play" id="playhead"></div>
           </div>
@@ -347,6 +578,10 @@
 <script>
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+/* BUTTON and VIDEO are in this list deliberately: the <video> keeps its native transport
+   when focused, and Space must not re-fire the button you just clicked. */
+const typing = e =>
+  /^(INPUT|TEXTAREA|SELECT|BUTTON|VIDEO)$/.test(e.target.tagName) || e.target.isContentEditable;
 
 let lib = null;        // /api/library payload
 let proj = null;       // current project payload
@@ -524,6 +759,12 @@ $('#pathInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#bt
 
 function showLibrary(fromHistory = false) {
   stopPoll();
+  // Back must never strand the user in a chromeless library.
+  if (focusOn) {
+    if (appIsFullscreen()) document.exitFullscreen().catch(() => {});
+    fsAsked = false;
+    setFocus(false);
+  }
   proj = null; markClean();
   if (!fromHistory && location.hash) location.hash = '';
   $('#viewLibrary').classList.remove('hidden');
@@ -553,8 +794,12 @@ async function openProject(name, fromHistory = false) {
   document.querySelector('.tldock').classList.remove('hidden');
   $('#btnBack').classList.remove('hidden');
   $('#crumb').textContent = proj.name;
+  $('#focusName').textContent = proj.name;
   paintProject();
   fitTimeline();
+  // First run on this machine: open the dock as tall as the tracks actually need.
+  let storedH = null; try { storedH = localStorage.getItem(TL_H_KEY); } catch {}
+  if (!storedH) { tlWant = fitTracksHeight(); applyTlHeight(false); }
   if (proj.job && ['queued', 'running'].includes(proj.job.status)) startPoll(proj.job.id);
 }
 
@@ -576,10 +821,14 @@ function paintProject() {
   paintDownloads();
   paintAction();
 
+  paintReport();
+
   $('#contact').innerHTML = (proj.contact_sheets || [])
     .map(n => `<img src="/media/${proj.name}/contact/${n}" alt="${n}"
                 style="width:100%;border-radius:6px;margin-top:8px;display:block">`).join('')
     || '<p class="tiny muted">none yet</p>';
+
+  reserveDockRoom();
 }
 
 function paintSteps() {
@@ -712,8 +961,33 @@ function paintSettings() {
 
 function paintDownloads() {
   $('#downloads').innerHTML = proj.stage === 'rendered' ? `
-    <a href="/download/${proj.name}/video"><button class="primary sm">Download video</button></a>
+    <a href="/download/${proj.name}/video"><button class="sm">Download video</button></a>
     <a href="/download/${proj.name}/licence"><button class="ghost sm">Licence report</button></a>` : '';
+}
+
+/* The render report, from the file the renderer actually wrote. Note the key is
+   peak_dbtp (render.py _write_report), not `peak` - `peak` only exists on the job
+   result object that startPoll reads. */
+function paintReport() {
+  const host = $('#renderReport');
+  const r = proj.report;
+  if (!r) { host.innerHTML = 'Not rendered yet.'; return; }
+  const bits = [];
+  if (r.lufs !== null && r.lufs !== undefined) bits.push(`${r.lufs} LUFS`);
+  if (r.peak_dbtp !== null && r.peak_dbtp !== undefined) bits.push(`peak ${r.peak_dbtp} dBTP`);
+  bits.push(r.preview ? 'preview (placeholder tones)' : `verdict ${escapeHtml(String(r.verdict))}`);
+  const li = xs => xs.map(x => `<li>${escapeHtml(x)}</li>`).join('');
+  const problems = (r.problems || []).length
+    ? `<div class="advlabel" style="margin-top:12px">problems</div>
+       <ul style="margin:4px 0 0 18px;padding:0" class="danger">${li(r.problems)}</ul>` : '';
+  const warnings = (r.warnings || []).length
+    ? `<div class="advlabel" style="margin-top:12px">warnings</div>
+       <ul style="margin:4px 0 0 18px;padding:0">${li(r.warnings)}</ul>` : '';
+  const prov = (proj.provenance || []).length
+    ? `<div class="advlabel" style="margin-top:12px">assets</div>
+       <div>${proj.provenance.length} generated asset${proj.provenance.length === 1 ? '' : 's'} &mdash; the
+       licence report lists engine, licence, prompt and seed for each.</div>` : '';
+  host.innerHTML = `<div>${bits.join(' &middot; ')}</div>${problems}${warnings}${prov}`;
 }
 
 /* --------------------------------------------------------- main action */
@@ -875,53 +1149,379 @@ function packLanes(cues, gap = 0.05) {
   return lanes.map(l => l.cues);
 }
 
+const stacked = () => window.matchMedia('(max-width:1060px)').matches;
+
 function reserveDockRoom() {
   const dock = document.querySelector('.tldock');
   const view = $('#viewProject');
   if (!dock || !view) return;
-  const h = dock.classList.contains('hidden') ? 24 : dock.offsetHeight + 18;
-  view.style.paddingBottom = `${h}px`;
-  document.documentElement.style.setProperty('--dock-h', `${h}px`);
+  const root = document.documentElement;
+  const h = dock.classList.contains('hidden') ? 24 : dock.offsetHeight + 6;
+  if (root.style.getPropertyValue('--dock-h') !== `${h}px`)
+    root.style.setProperty('--dock-h', `${h}px`);
+  // Desktop: the editor is height-bounded and the dock is its flow sibling, so a padding
+  // reservation here would be a phantom scrollbar of exactly one dock height. Stacked:
+  // the page scrolls again under a `position:sticky; bottom:0` dock, so it is still needed.
+  view.style.paddingBottom = stacked() ? `${h}px` : '0px';
+  const editor = document.querySelector('main.editor');
+  if (editor && editor.offsetParent) {          // offsetParent is null while hidden
+    const top = Math.ceil(editor.getBoundingClientRect().top + window.scrollY);
+    if (root.style.getPropertyValue('--top-h') !== `${top}px`)
+      root.style.setProperty('--top-h', `${top}px`);
+  }
+}
+
+/* Inspector tabs. Panes are separate scroll regions, so each keeps its own place. The
+   footer with Render / Save / Download and the job log lives outside them and never
+   moves, whichever tab is showing. */
+const TABS = ['cues', 'mix', 'output'];
+const cap = s => s[0].toUpperCase() + s.slice(1);
+const tabScroll = { cues: 0, mix: 0, output: 0 };
+let activeTab = 'cues';
+
+function showTab(name) {
+  if (!TABS.includes(name)) return;
+  const leaving = $(`#pane${cap(activeTab)}`);
+  if (leaving && !leaving.hidden) tabScroll[activeTab] = leaving.scrollTop;
+  activeTab = name;
+  for (const t of TABS) {
+    const pane = $(`#pane${cap(t)}`), btn = $(`#tab${cap(t)}`);
+    const on = t === name;
+    pane.hidden = !on;
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    if (on) pane.scrollTop = tabScroll[t] || 0;   // display:none resets scrollTop
+  }
+}
+$$('.tab').forEach(btn => { btn.onclick = () => showTab(btn.dataset.tab); });
+
+/* Arrow keys move between tabs, the ARIA convention. Tab itself is never intercepted,
+   so focus always escapes forward into the pane and on to the footer buttons. */
+$('.tabstrip').addEventListener('keydown', e => {
+  const i = TABS.indexOf(activeTab);
+  let next = null;
+  if (e.key === 'ArrowRight') next = TABS[(i + 1) % TABS.length];
+  else if (e.key === 'ArrowLeft') next = TABS[(i - 1 + TABS.length) % TABS.length];
+  else if (e.key === 'Home') next = TABS[0];
+  else if (e.key === 'End') next = TABS[TABS.length - 1];
+  if (!next) return;
+  e.preventDefault();
+  showTab(next);
+  $(`#tab${cap(next)}`).focus();
+});
+
+/* Every "look at this cue" path goes through here. The rAF matters: scrollIntoView on an
+   element that was display:none one statement earlier scrolls nothing. */
+const revealCue = sel => {
+  showTab('cues');
+  requestAnimationFrame(() => {
+    const el = document.querySelector(sel);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+};
+
+/* Compact density is a per-machine preference, so it lives in localStorage - which
+   throws outright in a locked-down profile, and a preference must never take the app
+   down. Default off: a first-time user should see the full card. */
+let denseOn = false;
+try { denseOn = localStorage.getItem('hudka.dense') === '1'; } catch {}
+$('#dense').checked = denseOn;
+$('#cues').classList.toggle('dense', denseOn);
+$('#dense').onchange = () => {
+  $('#cues').classList.toggle('dense', $('#dense').checked);
+  try { localStorage.setItem('hudka.dense', $('#dense').checked ? '1' : '0'); } catch {}
+};
+
+/* One shared width expression, so the ruler and the tracks can never disagree at the
+   tail of a long clip. */
+const tlContentWidth = () => Math.max(videoDuration() * pxPerSec, 200) + 8;
+
+const fpsOf = () =>
+  (proj && ((proj.cues && proj.cues.video && proj.cues.video.fps) || proj.fps)) || 30;
+
+/* mm:ss, or mm:ss:ff where frames matter. Not drop-frame: this is a monitoring readout
+   read against the same clock the player shows, not a delivery timecode. */
+function tc(s, frames) {
+  const f = Math.max(1, Math.round(fpsOf()));
+  s = Math.max(0, s || 0);
+  const whole = Math.floor(s);
+  const base = `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+  return frames ? `${base}:${String(Math.min(f - 1, Math.floor((s - whole) * f))).padStart(2, '0')}` : base;
+}
+
+/* Zoom limits must not be read from a collapsed or hidden dock, where clientWidth is 0. */
+const tlUsable = () => {
+  const s = $('#tlScroll');
+  return !!s && s.clientWidth > 0 && !document.querySelector('.tlwrap').classList.contains('collapsed');
+};
+function fitPps() {
+  if (!tlUsable()) return pxPerSec;
+  const dur = videoDuration(), room = $('#tlScroll').clientWidth - 16;
+  return dur > 0 && room > 0 ? room / dur : pxPerSec;
+}
+const minPps = () => Math.max(0.25, fitPps() * 0.95);          // never past "whole video"
+const maxPps = () => Math.max(60, Math.round(fpsOf()) * 24);   // ~24px per frame
+
+/* About 90px apart, on a unit the eye can count. Below a second that unit is frames,
+   which is what makes placement legible at high zoom. */
+function rulerStep() {
+  const f = 1 / Math.max(1, Math.round(fpsOf()));
+  const steps = [f, 2 * f, 5 * f, 10 * f, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+  return steps.find(s => s * pxPerSec >= 90) || steps[steps.length - 1];
+}
+
+let tlScrollRaf = 0, tlPaintedAt = -1e9;
+
+/* Virtualised: the old unconditional loop built ~4000 nodes for a ten-minute video at
+   400 px/s. Only the visible span plus a 400px margin is ever in the DOM. */
+function paintRuler(force) {
+  const ruler = $('#tlRuler'), ticks = $('#tlTicks'), scroll = $('#tlScroll');
+  if (!ruler || !ticks || !scroll) return;
+  const dur = videoDuration();
+  ruler.style.width = `${tlContentWidth()}px`;
+  $('#tlZoom').textContent = pxPerSec >= 100
+    ? `${(pxPerSec / Math.max(1, Math.round(fpsOf()))).toFixed(0)} px/f`
+    : `${pxPerSec.toFixed(pxPerSec < 10 ? 1 : 0)} px/s`;
+  if (!dur) { ticks.innerHTML = ''; return; }
+  const step = rulerStep(), minor = step / 5, frames = step < 1;
+  tlPaintedAt = scroll.scrollLeft;
+  const from = Math.max(0, (scroll.scrollLeft - 400) / pxPerSec);
+  const to = Math.min(dur, (scroll.scrollLeft + scroll.clientWidth + 400) / pxPerSec);
+  let html = '';
+  for (let i = Math.ceil(from / minor); i * minor <= to; i++) {
+    const s = i * minor;
+    html += (i % 5 === 0)                        // integer test, so no float drift
+      ? `<div class="tl-tick" style="left:${s * pxPerSec}px">${tc(s, frames)}</div>`
+      : `<div class="tl-tick minor" style="left:${s * pxPerSec}px"></div>`;
+  }
+  ticks.innerHTML = html;
+}
+
+function paintTime() {
+  const el = $('#tlTime');
+  const txt = `${tc($('#player').currentTime || 0, true)} / ${tc(videoDuration(), true)}`;
+  if (el) el.textContent = txt;
+  if ($('#stageTime')) $('#stageTime').textContent = txt;
+}
+
+/* The one real scroller drives the two followers. Nothing listens to the followers -
+   they are overflow:clip and therefore not scroll containers - so there is no second
+   scroll source that could feed back, and no guard flag is needed. */
+let lastSbw = -1;
+function syncTlPanes() {
+  const s = $('#tlScroll'), ruler = $('#tlRuler'), names = $('#tlNames');
+  if (!s || !ruler || !names) return;
+  ruler.style.transform = `translateX(${-s.scrollLeft}px)`;
+  names.style.transform = `translateY(${-s.scrollTop}px)`;
+  // The tracks carry a vertical scrollbar; the ruler viewport does not. Written only on
+  // change and scoped to .tlwrap: a custom property on :root inherits to every element
+  // in the document, so writing it per scroll frame invalidates style page-wide.
+  const w = s.offsetWidth - s.clientWidth;
+  if (w !== lastSbw) {
+    lastSbw = w;
+    document.querySelector('.tlwrap').style.setProperty('--tl-sbw', `${w}px`);
+  }
+}
+
+$('#tlScroll').addEventListener('scroll', () => {
+  if (tlScrollRaf) return;                        // one sync per frame, not per event
+  tlScrollRaf = requestAnimationFrame(() => {
+    tlScrollRaf = 0;
+    syncTlPanes();
+    // Only rebuild ticks when the view leaves the painted margin - rebuilding ~100 nodes
+    // every frame costs more than the transform it exists to support.
+    if (Math.abs($('#tlScroll').scrollLeft - tlPaintedAt) > 250) paintRuler();
+  });
+}, { passive: true });
+
+/* Wheeling over the name column scrolls the tracks it labels; it cannot scroll itself.
+   Let the page have the wheel when there is nothing to scroll. */
+$('#tlNamesWrap').addEventListener('wheel', e => {
+  const s = $('#tlScroll');
+  if (s.scrollHeight <= s.clientHeight) return;
+  e.preventDefault();
+  s.scrollTop += e.deltaY;
+}, { passive: false });
+
+/* ------------------------------------------------- dock height and track sizes */
+
+const TL_H_KEY = 'hudka.timeline.height';
+const TL_H_MIN = 88;
+const TL_CHROME = 63;        // resizer 7 + bar ~34 + ruler 20 + borders
+const EDITOR_MIN = 440;      // must match main.editor's min-height
+let tlWant = 200;            // what the user asked for, BEFORE clamping
+try {
+  const n = parseInt(localStorage.getItem(TL_H_KEY), 10);
+  if (Number.isFinite(n)) tlWant = n;
+} catch {}
+
+/* The cap is derived from the editor's floor, not from a fixed fraction: a fraction can
+   still starve the editor below min-height and put the page scrollbar back. Focus mode
+   enlarges the cap for free, because it shrinks --top-h. */
+function tlMaxHeight() {
+  const top = parseFloat(getComputedStyle(document.documentElement)
+                .getPropertyValue('--top-h')) || 150;
+  return Math.max(TL_H_MIN, Math.round(window.innerHeight - top - EDITOR_MIN - TL_CHROME));
+}
+const tlHeight = () => Math.min(tlMaxHeight(), Math.max(TL_H_MIN, tlWant || 200));
+
+function applyTlHeight(persist) {
+  document.documentElement.style.setProperty('--tl-h', `${tlHeight()}px`);
+  reserveDockRoom();          // --dock-h is MEASURED, so it follows this automatically
+  syncTlPanes();
+  if (persist) { try { localStorage.setItem(TL_H_KEY, String(tlWant)); } catch {} }
+}
+
+/* As tall as the tracks actually need, within the cap - the "let me see every track at
+   once" gesture. The scrollbar term matters: --tl-h sizes .tlbody, which must also
+   contain the horizontal scrollbar, or the last lane is covered by it. */
+function fitTracksHeight() {
+  const s = $('#tlScroll');
+  return ($('#tlLanes').offsetHeight || 200) + 4 + (s.offsetHeight - s.clientHeight);
+}
+
+$('#tlResize').addEventListener('pointerdown', e => {
+  if (e.button) return;
+  e.preventDefault();
+  const bar = e.currentTarget, startY = e.clientY, startH = tlHeight();
+  bar.setPointerCapture(e.pointerId);
+  document.body.classList.add('rowresize');
+  let raf = 0;
+  const move = ev => {
+    tlWant = startH + (startY - ev.clientY);
+    // Set the variable synchronously; defer the reflow-heavy part to one frame.
+    document.documentElement.style.setProperty('--tl-h', `${tlHeight()}px`);
+    if (raf) return;
+    raf = requestAnimationFrame(() => { raf = 0; reserveDockRoom(); syncTlPanes(); });
+  };
+  const up = () => {
+    bar.removeEventListener('pointermove', move);
+    bar.removeEventListener('pointerup', up);
+    bar.removeEventListener('pointercancel', up);
+    document.body.classList.remove('rowresize');
+    tlWant = tlHeight();                 // store the CLAMPED value, not the overshoot
+    applyTlHeight(true);
+    paintRuler(true);
+  };
+  bar.addEventListener('pointermove', move);
+  bar.addEventListener('pointerup', up);
+  bar.addEventListener('pointercancel', up);
+});
+
+$('#tlResize').addEventListener('dblclick', () => {
+  tlWant = fitTracksHeight(); applyTlHeight(true); paintRuler(true);
+});
+$('#tlResize').addEventListener('keydown', e => {
+  const d = e.key === 'ArrowUp' ? 24 : e.key === 'ArrowDown' ? -24 : 0;
+  if (!d) return;
+  e.preventDefault();
+  tlWant = tlHeight() + d;
+  applyTlHeight(true);
+});
+
+const TL_SIZES = [[26, 18], [38, 26], [56, 36]];      // [bed lane, fx lane]
+const TL_SIZE_KEY = 'hudka.timeline.trackSize';
+let tlSize = 1;
+/* Number.isFinite, not ?? : parseInt of a missing key is NaN, ?? does not catch NaN,
+   NaN survives Math.min/Math.max, and destructuring TL_SIZES[NaN] would throw at top
+   level - killing loadLibrary() and leaving a dead page for every first-time user. */
+try {
+  const n = parseInt(localStorage.getItem(TL_SIZE_KEY), 10);
+  if (Number.isFinite(n)) tlSize = Math.min(TL_SIZES.length - 1, Math.max(0, n));
+} catch {}
+
+function applyTlSize(persist) {
+  const [bed, fx] = TL_SIZES[tlSize] || TL_SIZES[1];   // belt and braces
+  document.documentElement.style.setProperty('--lane-h', `${bed}px`);
+  document.documentElement.style.setProperty('--lane-h-sfx', `${fx}px`);
+  if (persist) { try { localStorage.setItem(TL_SIZE_KEY, String(tlSize)); } catch {} }
+  syncTlPanes();
+}
+$('#tlSize').onclick = function () { tlSize = (tlSize + 1) % TL_SIZES.length; applyTlSize(true); this.blur(); };
+
+/* ------------------------------------------------------------ track headers */
+
+let soloKey = null;                       // view state only; never written to the sheet
+const laneKey = cues => (cues && cues.length ? `lane:${cues[0].id}` : '');
+
+/* One header per lane. Mute is a REAL edit - it sets `muted` on the lane's cues, which
+   the mixer already honours, so it changes the render. It is offered only on bed lanes,
+   which are 1:1 with a cue; fx lanes are a packLanes group whose membership is
+   recomputed on every drag, so a lane-level mute there would target a moving set (the
+   fx mute lives on the cue card instead). Solo is a view state: a true solo would need a
+   live mixer we do not have, so it dims the other tracks and says so. */
+function laneHeader(label, cls, key, colour, cues, mutable) {
+  const tag = document.createElement('div');
+  tag.className = `tl-name ${cls}`
+    + (cues && cues.some(c => c.id === selectedCue) ? ' sel' : '')
+    + (soloKey && soloKey !== key ? ' dim' : '');
+  const chip = document.createElement('i');
+  chip.className = 'tl-chip';
+  chip.style.background = colour;
+  const text = document.createElement('span');
+  text.className = 'tl-nametext';
+  text.textContent = label;
+  text.title = label;
+  tag.append(chip, text);
+
+  if (cues && cues.length) {
+    if (mutable) {
+      const allMuted = cues.every(c => c.muted);
+      const m = document.createElement('button');
+      m.className = 'tl-btn' + (allMuted ? ' on' : '');
+      m.textContent = 'M';
+      m.tabIndex = -1;                    // two stops per lane would swamp the tab order
+      m.title = allMuted ? 'Unmute this track'
+                         : 'Mute \u2014 this track is left out of the render';
+      m.onclick = ev => {
+        ev.stopPropagation();
+        cues.forEach(c => { c.muted = !allMuted; });
+        markDirty(); paintCues(); paintTimeline();
+      };
+      tag.append(m);
+    }
+    const s = document.createElement('button');
+    s.className = 'tl-btn' + (soloKey === key ? ' solo' : '');
+    s.textContent = 'S';
+    s.tabIndex = -1;
+    s.title = 'Solo \u2014 dims every other track while you work. A view setting, not saved.';
+    s.onclick = ev => { ev.stopPropagation(); soloKey = soloKey === key ? null : key; paintTimeline(); };
+    tag.append(s);
+    tag.onclick = () => selectCue(cues[0].id);
+  }
+  return tag;
 }
 
 function paintTimeline() {
   const dur = videoDuration();
   const lanes = $('#tlLanes');
-  const ruler = $('#tlRuler');
-  if (!lanes || !ruler) return;
-  if (!dur) { lanes.innerHTML = ''; ruler.innerHTML = ''; return; }
-
-  const width = Math.max(dur * pxPerSec, 200);
-  $('#tlInner').style.width = `${width + 8}px`;
-  $('#tlZoom').textContent = `${pxPerSec.toFixed(0)} px/s`;
-  const x = s => s * pxPerSec;
-
-  // Ruler: a tick roughly every 90px, on a round number of seconds.
-  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
-  const step = steps.find(s => s * pxPerSec >= 90) || steps[steps.length - 1];
-  ruler.innerHTML = '';
-  for (let s = 0; s <= dur; s += step) {
-    const tick = document.createElement('div');
-    tick.className = 'tl-tick';
-    tick.style.left = `${x(s)}px`;
-    tick.textContent = fmt(s);
-    ruler.append(tick);
+  if (!lanes) return;
+  /* Imported but not analysed: duration is 0. #tlRuler now OWNS #tlTicks and #tlPlayTop,
+     so wiping its innerHTML here would be permanent and silent - paintRuler would no-op
+     forever and paintPlayhead would find no #tlPlayTop, with no recovery short of a
+     reload. Clear the ticks; keep the strip. */
+  if (!dur) {
+    lanes.innerHTML = '';
+    paintRuler();
+    $('#tlInfo').textContent = '';
+    reserveDockRoom(); syncTlPanes();
+    return;
   }
+
+  $('#tlInner').style.width = `${tlContentWidth()}px`;
+  const x = s => s * pxPerSec;
+  paintRuler(true);
 
   lanes.innerHTML = '';
   const shots = (proj.shots || []).map(s => s.start).filter(s => s > 0.01);
 
   const names = $('#tlNames');
-  names.innerHTML = '<div class="pad"></div>';
+  names.innerHTML = '';
 
-  const addLane = (label, cls = '') => {
-    const tag = document.createElement('div');
-    tag.className = `tl-name ${cls}`;
-    tag.textContent = label;
-    names.append(tag);
+  const addLane = (label, cls = '', key = '', colour = 'var(--speech)', cues = null, mutable = false) => {
+    names.append(laneHeader(label, cls, key, colour, cues, mutable));
 
     const lane = document.createElement('div');
-    lane.className = `tl-lane ${cls}`;
+    lane.className = `tl-lane ${cls}` + (soloKey && soloKey !== key ? ' dim' : '');
     for (const s of shots) {                       // shot boundaries across every lane
       const line = document.createElement('div');
       line.className = 'tl-shot';
@@ -940,7 +1540,7 @@ function paintTimeline() {
   const colour = { music: 'var(--music)', ambience: 'var(--amb)', sfx: 'var(--sfx)' };
 
   if (proj.speech_ranges && proj.speech_ranges.length) {
-    const lane = addLane('dialogue');
+    const lane = addLane('dialogue', '', 'speech', 'var(--speech)');
     for (const [a, b] of proj.speech_ranges) {
       const block = document.createElement('div');
       block.className = 'tl-speech';
@@ -950,18 +1550,19 @@ function paintTimeline() {
     }
   }
 
-  if (!proj.cues) { paintPlayhead(); return; }
+  if (!proj.cues) { paintPlayhead(); reserveDockRoom(); syncTlPanes(); return; }
 
   for (const kind of ['music', 'ambience']) {
     for (const bed of proj.cues[kind] || []) {
-      const lane = addLane(kind);
+      const lane = addLane(`${kind} \u00b7 ${bed.id}`, '', laneKey([bed]), colour[kind], [bed], true);
       lane.append(clipEl(bed, kind, colour[kind], x, 'bed'));
     }
   }
 
   const sfxLanes = packLanes(proj.cues.sfx || []);
   sfxLanes.forEach((group, i) => {
-    const lane = addLane(sfxLanes.length > 1 ? `fx ${i + 1}` : 'fx', 'sfx');
+    const lane = addLane(sfxLanes.length > 1 ? `fx ${i + 1}` : 'fx', 'sfx',
+                         laneKey(group), colour.sfx, group, false);
     for (const cue of group) lane.append(clipEl(cue, 'sfx', colour.sfx, x, 'hit'));
   });
 
@@ -972,6 +1573,7 @@ function paintTimeline() {
 
   paintPlayhead();
   reserveDockRoom();
+  syncTlPanes();
 }
 
 function clipEl(cue, kind, background, x, shape) {
@@ -983,11 +1585,17 @@ function clipEl(cue, kind, background, x, shape) {
   el.title = `${cue.id} — ${cue.prompt}`;
   if (shape === 'bed') el.textContent = cue.id;
 
+  /* selectCue repaints every lane, which would hand dragClip an element already
+     detached from the document - the drag then "works" but shows no live feedback.
+     Start the drag on the LIVE element, and mark the selection without a repaint. */
   el.addEventListener('mousedown', e => {
     e.stopPropagation();
-    selectCue(cue.id);
-    if (e.target.classList.contains('tl-grip')) return;   // trimming, handled below
+    if (e.target.classList.contains('tl-grip')) { selectCue(cue.id); return; }
     dragClip(e, cue, el);
+    selectedCue = cue.id;
+    $$('.tl-clip.sel').forEach(n => n.classList.remove('sel'));
+    el.classList.add('sel');
+    paintCues();
   });
 
   if (shape === 'bed') {
@@ -1019,11 +1627,15 @@ function dragClip(e, cue, el) {
     else { cue.start = +at.toFixed(3); cue.end = +Math.min(at + length, dur).toFixed(3); }
     el.style.left = `${at * pxPerSec}px`;
   };
-  const up = () => {
+  const up = ev => {
     document.removeEventListener('mousemove', move);
     document.removeEventListener('mouseup', up);
     el.classList.remove('dragging');
+    // A smooth scroll starting underneath a drag is the most disorienting thing in the
+    // editor, so reveal the card only when this was a click rather than a move.
+    const moved = Math.abs(ev.clientX - startX) > 3;
     markDirty(); paintCues(); paintTimeline();
+    if (!moved) revealCue(`.cue[data-id="${cue.id}"]`);
   };
   document.addEventListener('mousemove', move);
   document.addEventListener('mouseup', up);
@@ -1059,6 +1671,10 @@ function snap(at) {
   for (const target of targets) {
     if (Math.abs(target - at) < delta) { delta = Math.abs(target - at); best = target; }
   }
+  // Zoomed in far enough that a frame is a visible distance, land on frames the way an
+  // NLE does - there is no sound placed between two frames of picture.
+  const f = Math.max(1, Math.round(fpsOf()));
+  if (best === at && pxPerSec / f >= 4) best = Math.round(at * f) / f;
   return best;
 }
 
@@ -1066,53 +1682,212 @@ function selectCue(id) {
   selectedCue = id;
   paintTimeline();
   paintCues();
-  const card = document.querySelector(`.cue[data-id="${id}"]`);
-  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  // Bring the lane into vertical view. scrollIntoView here would drag the whole pane,
+  // so move the track scroller directly.
+  const clip = document.querySelector('.tl-clip.sel');
+  const lane = clip && clip.closest('.tl-lane');
+  if (lane) {
+    const s = $('#tlScroll');
+    if (lane.offsetTop < s.scrollTop) s.scrollTop = lane.offsetTop - 4;
+    else if (lane.offsetTop + lane.offsetHeight > s.scrollTop + s.clientHeight)
+      s.scrollTop = lane.offsetTop + lane.offsetHeight - s.clientHeight + 4;
+  }
+
+  const all = proj.cues ? ['music', 'ambience', 'sfx'].flatMap(k => proj.cues[k] || []) : [];
+  const hit = all.find(c => c.id === id);
+  $('#stageCue').textContent = hit ? `${hit.id} \u2014 ${hit.prompt}` : '';
+
+  revealCue(`.cue[data-id="${id}"]`);
 }
 
 function paintPlayhead() {
-  const el = $('#playhead');
-  if (el) el.style.left = `${($('#player').currentTime || 0) * pxPerSec}px`;
+  const at = ($('#player').currentTime || 0) * pxPerSec;
+  const el = $('#playhead');   if (el)  el.style.left = `${at}px`;
+  const top = $('#tlPlayTop'); if (top) top.style.left = `${at}px`;
+  paintTime();
+}
+
+const playheadVisible = () => {
+  const s = $('#tlScroll'), x = ($('#player').currentTime || 0) * pxPerSec;
+  return x >= s.scrollLeft && x <= s.scrollLeft + s.clientWidth;
+};
+
+/* Zoom keeps one moment pinned under the same pixel: the playhead if it is on screen -
+   which is what an editor is looking at - the mouse for Ctrl+wheel, the middle of the
+   view otherwise. Zooming around the abstract centre is why the old one felt slippery. */
+function zoomTimeline(factor, anchorSec) {
+  if (!tlUsable()) return;
+  const scroll = $('#tlScroll');
+  const at = anchorSec !== undefined ? anchorSec
+    : playheadVisible() ? ($('#player').currentTime || 0)
+    : (scroll.scrollLeft + scroll.clientWidth / 2) / pxPerSec;
+  const offset = at * pxPerSec - scroll.scrollLeft;
+  pxPerSec = Math.min(maxPps(), Math.max(minPps(), pxPerSec * factor));
+  tlPaintedAt = -1e9;
+  paintTimeline();
+  scroll.scrollLeft = Math.max(0, at * pxPerSec - offset);
+  syncTlPanes(); paintRuler(true);
 }
 
 function fitTimeline() {
-  const dur = videoDuration();
-  const room = $('#tlScroll').clientWidth - 16;
-  if (dur > 0 && room > 0) pxPerSec = Math.max(1, room / dur);
+  if (videoDuration() > 0) pxPerSec = Math.max(0.25, fitPps());
+  tlPaintedAt = -1e9;
   paintTimeline();
+  $('#tlScroll').scrollLeft = 0;
+  syncTlPanes(); paintRuler(true);
 }
 
-function zoomTimeline(factor) {
+function zoomToSelection() {
+  if (!tlUsable()) return;
+  if (!proj || !proj.cues || !selectedCue) { fitTimeline(); return; }
+  const cue = ['music', 'ambience', 'sfx']
+    .flatMap(k => proj.cues[k] || []).find(c => c.id === selectedCue);
+  if (!cue) { fitTimeline(); return; }
   const scroll = $('#tlScroll');
-  const centre = (scroll.scrollLeft + scroll.clientWidth / 2) / pxPerSec;
-  pxPerSec = Math.min(400, Math.max(0.5, pxPerSec * factor));
+  const start = cueTime(cue), len = Math.max(cueLen(cue), 0.2);
+  pxPerSec = Math.min(maxPps(), Math.max(minPps(), (scroll.clientWidth * 0.7) / len));
+  tlPaintedAt = -1e9;
   paintTimeline();
-  scroll.scrollLeft = centre * pxPerSec - scroll.clientWidth / 2;
+  scroll.scrollLeft = Math.max(0, (start + len / 2) * pxPerSec - scroll.clientWidth / 2);
+  syncTlPanes(); paintRuler(true);
 }
 
-$('#tlIn').onclick = () => zoomTimeline(1.6);
-$('#tlOut').onclick = () => zoomTimeline(1 / 1.6);
-$('#tlFit').onclick = fitTimeline;
+// this.blur() on each, so Space does not re-fire the last button pressed.
+$('#tlIn').onclick = function () { zoomTimeline(1.6); this.blur(); };
+$('#tlOut').onclick = function () { zoomTimeline(1 / 1.6); this.blur(); };
+$('#tlFit').onclick = function () { fitTimeline(); this.blur(); };
+$('#tlSel').onclick = function () { zoomToSelection(); this.blur(); };
 $('#tlHide').onclick = () => {
   const wrap = document.querySelector('.tlwrap');
   const hidden = wrap.classList.toggle('collapsed');
   $('#tlHide').innerHTML = hidden ? '&#9650;' : '&#9660;';
   $('#tlHide').title = hidden ? 'Show the timeline' : 'Collapse the timeline';
   reserveDockRoom();
+  syncTlPanes(); paintRuler(true);       // the width may have changed while collapsed
 };
+
 $('#tlScroll').addEventListener('wheel', e => {
-  if (!e.ctrlKey) return;                     // Ctrl+wheel zooms, plain wheel scrolls
+  const scroll = $('#tlScroll');
+  // Browsers disagree about which axis a shifted wheel reports; read both, or the pan is
+  // a silent no-op on the engines that report deltaX.
+  if (e.shiftKey && !e.ctrlKey) { e.preventDefault(); scroll.scrollLeft += (e.deltaX || e.deltaY); return; }
+  if (!e.ctrlKey) return;                    // plain wheel now scrolls the tracks
   e.preventDefault();
-  zoomTimeline(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+  const rect = scroll.getBoundingClientRect();
+  zoomTimeline(e.deltaY < 0 ? 1.15 : 1 / 1.15,
+               (scroll.scrollLeft + e.clientX - rect.left) / pxPerSec);
 }, { passive: false });
+
+/* Scrub on the ruler, the way every NLE does. #tlRuler carries the horizontal translate,
+   so its own rect is already in content coordinates - no scrollLeft arithmetic. */
+let scrubbing = false;
+function scrubTo(ev) {
+  const rect = $('#tlRuler').getBoundingClientRect();
+  $('#player').currentTime =
+    Math.max(0, Math.min(videoDuration(), (ev.clientX - rect.left) / pxPerSec));
+  paintPlayhead();
+}
+$('#tlRulerWrap').addEventListener('mousedown', e => {
+  e.preventDefault();
+  scrubbing = true;
+  scrubTo(e);
+  const move = ev => scrubTo(ev);
+  const up = () => {
+    scrubbing = false;
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+});
 
 $('#player').addEventListener('timeupdate', () => {
   paintPlayhead();
-  const scroll = $('#tlScroll');
-  const at = $('#player').currentTime * pxPerSec;      // keep the playhead in view
-  if (at < scroll.scrollLeft || at > scroll.scrollLeft + scroll.clientWidth - 40) {
-    scroll.scrollLeft = at - scroll.clientWidth / 3;
+  if (scrubbing) return;          // auto-follow must not move the content under the drag
+  const p = $('#player'), scroll = $('#tlScroll');
+  const at = p.currentTime * pxPerSec;
+  // Playing: page ahead with a lead. Paused (a seek): only move if it is off screen, so
+  // reading a passage does not fight the auto-scroll.
+  const margin = p.paused ? 0 : 40;
+  if (at < scroll.scrollLeft || at > scroll.scrollLeft + scroll.clientWidth - margin) {
+    scroll.scrollLeft = at - scroll.clientWidth / (p.paused ? 2 : 3);
   }
+});
+
+/* The standard NLE keys. This MUST stay a separate listener from the Ctrl+S one below. */
+document.addEventListener('keydown', e => {
+  if (typing(e) || $('#licenceDlg').open || !proj) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;      // leave Ctrl+S alone
+  const p = $('#player'), f = 1 / Math.max(1, Math.round(fpsOf()));
+  switch (e.key) {
+    case '=': case '+': e.preventDefault(); zoomTimeline(1.6); break;
+    case '-': case '_': e.preventDefault(); zoomTimeline(1 / 1.6); break;
+    case '\\':         e.preventDefault(); fitTimeline(); break;
+    case 'f':           e.preventDefault(); zoomToSelection(); break;
+    case ' ':           e.preventDefault(); p.paused ? p.play() : p.pause(); break;
+    case 'ArrowLeft':   e.preventDefault(); p.currentTime = Math.max(0, p.currentTime - (e.shiftKey ? 1 : f)); break;
+    case 'ArrowRight':  e.preventDefault(); p.currentTime = Math.min(videoDuration(), p.currentTime + (e.shiftKey ? 1 : f)); break;
+    case 'Home':        e.preventDefault(); p.currentTime = 0; break;
+    case 'End':         e.preventDefault(); p.currentTime = Math.max(0, videoDuration() - 0.05); break;
+  }
+});
+
+/* ------------------------------------------------------------- full screen */
+
+/* Two fullscreens live on this page and they must not be confused. The <video> has its
+   own, which fills the screen with picture; this one fills the screen with the editor.
+   The element requested is document.documentElement, NOT a wrapper div: the UA sheet's
+   rule is `:not(:root):fullscreen { position:fixed }`, so the root is excluded and the
+   page keeps scrolling normally - which is what keeps `position:sticky` working on the
+   header and on .tldock. Fullscreening a nested box would break both at once. */
+const FS_ROOT = document.documentElement;
+let focusOn = false;
+let fsAsked = false;
+const appIsFullscreen = () => document.fullscreenElement === FS_ROOT;
+
+function setFocus(on) {
+  focusOn = on;
+  document.body.classList.toggle('fs', on);
+  $('#btnFull').innerHTML = on ? '\u2716' : '\u26f6';
+  $('#btnFull').title = on ? 'Leave full screen (Esc)'
+    : 'Full screen (Shift+F) \u2014 the player has its own fullscreen button';
+  $('#focusName').textContent = proj ? proj.name : '';
+  applyTlHeight(false);       // usable height changed: re-clamp --tl-h, re-measure --dock-h
+  paintRuler(true);
+}
+
+async function toggleFocus() {
+  if (!proj) return;
+  if (!focusOn) {
+    setFocus(true);
+    try { await FS_ROOT.requestFullscreen(); fsAsked = true; }   // a refusal must not break focus mode
+    catch { fsAsked = false; }
+  } else {
+    if (appIsFullscreen()) { try { await document.exitFullscreen(); } catch {} }
+    fsAsked = false;
+    setFocus(false);
+  }
+}
+$('#btnFull').onclick = toggleFocus;
+$('#btnFocusOut').onclick = toggleFocus;
+
+document.addEventListener('fullscreenchange', () => {
+  const el = document.fullscreenElement;
+  // The player went fullscreen, or handed it back to us: not our business, and the
+  // layout must not move. (The spec keeps a stack, so leaving video-fullscreen from
+  // inside app-fullscreen fires with el === FS_ROOT, not null.)
+  if (el && el !== FS_ROOT) return;
+  if (!el && fsAsked) { fsAsked = false; if (focusOn) setFocus(false); }
+});
+
+document.addEventListener('keydown', e => {
+  if ($('#licenceDlg').open) return;
+  if (e.key === 'Escape' && focusOn && !typing(e) && !appIsFullscreen()) {
+    setFocus(false);        // no real fullscreen for the browser to exit, so Esc is ours
+    return;
+  }
+  if (e.key === 'F' && e.shiftKey && !typing(e)) { e.preventDefault(); toggleFocus(); }
 });
 
 /* -------------------------------------------------------------- cues */
@@ -1171,6 +1946,12 @@ function cueCard(cue, kind) {
   card.className = 'cue' + (badCues.has(cue.id) ? ' bad' : '')
     + (cue.id === selectedCue ? ' sel' : '');
   card.dataset.id = cue.id;
+  // In compact mode the whole card is the hit target. `summary` MUST be in the guard or
+  // the advanced disclosure stops opening.
+  card.onclick = e => {
+    if (e.target.closest('button, textarea, input, select, summary, a')) return;
+    if (cue.id !== selectedCue) selectCue(cue.id);
+  };
 
   const top = document.createElement('div');
   top.className = 'cue-top';
@@ -1189,13 +1970,20 @@ function cueCard(cue, kind) {
   const reroll = mk('re-roll', 'new seed: regenerates only this cue on the next render', () => {
     cue.seed = Math.floor(Math.random() * 100000); markDirty();
   });
+  const mute = mk(cue.muted ? 'muted' : 'mute',
+    'leave this cue out of the render', () => {
+      cue.muted = !cue.muted; markDirty(); paintCues(); paintTimeline();
+    }, cue.muted ? 'danger' : '');
   const del = mk('✕', 'remove this cue', () => {
     proj.cues[kind] = proj.cues[kind].filter(c => c !== cue);
     markDirty(); paintCues(); paintTimeline();
   }, 'danger');
 
   const spacer = document.createElement('div'); spacer.className = 'spacer';
-  top.append(id, seek, play, reroll, spacer, del);
+  const sum = document.createElement('span');
+  sum.className = 'cue-sum tiny muted';
+  sum.textContent = `${Number(at).toFixed(2)}s \u00b7 ${cue.prompt}`;
+  top.append(id, seek, play, reroll, mute, sum, spacer, del);
 
   const prompt = document.createElement('textarea');
   prompt.value = cue.prompt;
@@ -1343,7 +2131,17 @@ async function requestTakes(cueId) {
   } catch (err) { showError('Cannot make variations', err.message); }
 }
 
+/* paintCues empties #cues, which collapses the pane to zero height and resets its
+   scrollTop. Without this every markDirty repaint - dragging a clip, trimming a bed,
+   deleting a cue, adopting a take - flings the list back to the top. */
 function paintCues() {
+  const pane = $('#paneCues');
+  const keep = pane ? pane.scrollTop : 0;
+  try { paintCuesBody(); }
+  finally { if (pane) pane.scrollTop = keep; }
+}
+
+function paintCuesBody() {
   const host = $('#cues');
   host.innerHTML = '';
   $$('[data-add]').forEach(b => b.disabled = !proj.cues);
@@ -1495,8 +2293,9 @@ function showCueErrors(detail) {
   say('not saved', 'danger');
   paintCues();
 
-  const first = $('.cue.bad');
-  if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Saving from the pinned footer can happen while Mix or Output is showing; without
+  // this the banner names cues sitting in a display:none pane.
+  if ($('.cue.bad')) revealCue('.cue.bad');
 }
 $('#btnSave').onclick = saveCues;
 
@@ -1545,7 +2344,27 @@ function routeFromHash() {
 }
 
 window.addEventListener('hashchange', routeFromHash);
-window.addEventListener('resize', () => { reserveDockRoom(); });
+window.addEventListener('resize', () => {
+  applyTlHeight(false);                                          // re-clamp to the new window
+  pxPerSec = Math.min(maxPps(), Math.max(minPps(), pxPerSec));
+  paintTimeline();
+});
+
+/* #projBanner is the only genuinely variable-height thing above the editor (a warning
+   arrives, a licence block appears), and it moves the editor's top edge. Measure rather
+   than guess. #steps is deliberately NOT observed: it is a fixed single-line rail, and
+   observing it closes a loop through the scrollbar-width path. */
+if (window.ResizeObserver) {
+  let pending = 0;
+  const above = new ResizeObserver(() => {
+    if (pending) return;
+    pending = requestAnimationFrame(() => { pending = 0; reserveDockRoom(); });
+  });
+  above.observe($('#projBanner'));
+}
+
+// A stored preference must never be able to take the app down.
+try { applyTlSize(false); applyTlHeight(false); } catch (err) { console.warn(err); }
 
 loadLibrary()
   .then(routeFromHash)

@@ -128,6 +128,7 @@ def create_app(workspace: Path) -> FastAPI:
             "busy": bool(active),
             "job": active.as_dict() if active else None,
             "duration": video.get("duration", 0),
+            "fps": video.get("fps", 0),
             "width": video.get("width", 0),
             "height": video.get("height", 0),
             "has_dialogue": video.get("has_dialogue", False),
