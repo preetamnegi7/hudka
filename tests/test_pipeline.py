@@ -382,6 +382,32 @@ class TestShapingControls:
         clip = np.ones((SAMPLE_RATE, 2), dtype=np.float32) * 0.3
         assert pitch_shift(clip, -12).shape[0] == pytest.approx(2 * SAMPLE_RATE, rel=0.01)
 
+    def test_moving_a_cue_in_time_reuses_its_stem(self):
+        """Dragging a clip must not throw away the sound it names.
+
+        `window` reaches only an engine that conditions on picture, and generate_stems'
+        cleanup unlinks every wav the current run did not produce - so a key that moved
+        with `at` regenerated the cue AND deleted the take it already had.
+        """
+        from hudka.engines.base import GenerateRequest
+
+        a = GenerateRequest(prompt="a click", duration=2.0, seed=1, window=(1.0, 3.0))
+        b = GenerateRequest(prompt="a click", duration=2.0, seed=1, window=(9.0, 11.0))
+        assert a.cache_key("silence") == b.cache_key("silence")
+
+    def test_a_picture_conditioned_engine_still_keys_on_its_window(self, tmp_path):
+        """The other half: for foley the window IS what the model sees, so two spans of
+        the same video are different requests and must not share a stem."""
+        from hudka.engines.base import GenerateRequest
+
+        clip = tmp_path / "source.mp4"
+        clip.write_bytes(b"")
+        a = GenerateRequest(prompt="a click", duration=2.0, seed=1,
+                            video=clip, window=(1.0, 3.0))
+        b = GenerateRequest(prompt="a click", duration=2.0, seed=1,
+                            video=clip, window=(9.0, 11.0))
+        assert a.cache_key("hunyuan-foley") != b.cache_key("hunyuan-foley")
+
     def test_tone_changes_do_not_invalidate_the_cache(self):
         """Filtering is applied at placement, so it must not force a regeneration."""
         from hudka.engines.base import GenerateRequest

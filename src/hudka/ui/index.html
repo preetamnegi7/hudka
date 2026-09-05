@@ -1652,6 +1652,23 @@ function dragClip(e, cue, el) {
   document.addEventListener('mouseup', up);
 }
 
+/* schema.py's BedCue._check_range rejects fade_in + fade_out > duration. A scaffolded
+   music bed carries 0.5s in and up to 2.0s out (design.py:230-231) while trimBed lets you
+   drag it down to 1.0s, so trimming a bed produced a sheet the server refuses - with an
+   error about fades, on a cue you had just dragged.
+   Floor rather than round, and leave a millisecond: both fades are written through
+   toFixed(3) against a length that already carries float error, and the schema test is a
+   strict `>`. The 1.0s floor on length stays - a sub-second bed still generates at
+   MIN_RELIABLE_SECONDS and is trimmed after, so the retained slice can measure below
+   qa.SILENT_BELOW_DBFS and block the render for every other cue too. */
+const q3 = v => Math.floor(v * 1000) / 1000;
+function clampBedFades(bed) {
+  const len = Math.max(0.01, bed.end - bed.start);
+  bed.fade_in = q3(Math.max(0, Math.min(bed.fade_in || 0, len * 0.4)));
+  bed.fade_out = q3(Math.max(0, Math.min(bed.fade_out || 0, len - bed.fade_in - 0.001)));
+  return bed;
+}
+
 function trimBed(e, bed, side) {
   const startX = e.clientX;
   const from = side === 'l' ? bed.start : bed.end;
@@ -1661,6 +1678,7 @@ function trimBed(e, bed, side) {
     if (!ev.altKey) v = snap(v);
     if (side === 'l') bed.start = +Math.max(0, Math.min(v, bed.end - 1)).toFixed(3);
     else bed.end = +Math.min(dur, Math.max(v, bed.start + 1)).toFixed(3);
+    clampBedFades(bed);
     paintTimeline();
   };
   const up = () => {

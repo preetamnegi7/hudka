@@ -77,7 +77,12 @@ class GenerateRequest:
         parts = [engine_id, self.prompt, f"{self.duration:.3f}", str(self.seed)]
         if self.video is not None:
             parts.append(Path(self.video).name)
-        if self.window is not None:
+            # The window is nested here on purpose. It reaches a model only when that
+            # model conditions on picture - hunyuan_foley cuts exactly this span out of
+            # the video in `_extract_window`, and nothing else reads it. Hashing it for
+            # every engine meant moving a cue one frame produced a new key, a cache miss,
+            # and then the deletion of the old stem by generate_stems' stale-file cleanup:
+            # dragging a clip threw away the sound it named.
             parts.append(f"{self.window[0]:.3f}-{self.window[1]:.3f}")
         for key in sorted(self.extra):
             parts.append(f"{key}={self.extra[key]}")
