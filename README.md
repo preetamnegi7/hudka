@@ -212,7 +212,7 @@ uv run hudka doctor              # check ffmpeg, engines, GPU
 uv run pytest
 ```
 
-205 tests, all offline — they run against a stub engine and an ffmpeg-generated fixture,
+210 tests, all offline — they run against a stub engine and an ffmpeg-generated fixture,
 so no weights or GPU are needed. They assert shot detection against known cuts,
 sample-accurate cue placement, loudness within tolerance, mix balance, cache reuse, and
 that the licence gate blocks restricted engines before any generation starts.

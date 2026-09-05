@@ -38,7 +38,8 @@
   .brand { font-size:15px; font-weight:650; letter-spacing:.2px; }
   .mark { display:inline-flex; color:var(--accent); line-height:0; }
 
-  .view { padding:22px; max-width:1500px; margin:0 auto; }
+  .view { padding:18px 22px 0; }
+  #viewProject { padding-bottom:24px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px; }
   .panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.09em;
     color:var(--dim); margin:0 0 12px; font-weight:650; }
@@ -73,16 +74,21 @@
   .step.now .n { color:var(--accent); }
   .step .t { font-size:13px; margin-top:2px; }
 
-  main.editor { display:grid; grid-template-columns:minmax(400px,1fr) minmax(430px,1.05fr);
+  main.editor { display:grid; grid-template-columns:minmax(420px,1fr) minmax(430px,760px);
     gap:18px; align-items:start; }
   @media (max-width:1020px) { main.editor { grid-template-columns:1fr; } }
-  .sticky { position:sticky; top:66px; }
-  video { width:100%; border-radius:8px; background:#000; display:block; }
+  .sticky { position:sticky; top:66px; overflow-y:auto;
+    max-height:calc(100vh - 82px - var(--dock-h, 180px)); }
+  video { width:100%; border-radius:8px; background:#000; display:block;
+    aspect-ratio:16/9; max-height:38vh; object-fit:contain; }
 
   /* Timeline: a scrolling multi-track view. Lane labels stay pinned while the tracks
      scroll under them, so a wide zoom never loses which lane is which. */
-  .tlwrap { margin-top:12px; border:1px solid var(--line); border-radius:8px;
-    background:#0d0f14; overflow:hidden; }
+  .tldock { position:sticky; bottom:0; z-index:15; padding:0 22px 14px;
+    background:linear-gradient(180deg,transparent,var(--bg) 22px); }
+  .tlwrap { border:1px solid var(--line); border-radius:8px; background:#0d0f14;
+    overflow:hidden; box-shadow:0 -10px 24px #0e0f13cc; }
+  .tlwrap.collapsed .tlbody { display:none; }
   .tlbar { display:flex; align-items:center; gap:10px; padding:6px 9px;
     border-bottom:1px solid var(--line); }
   .tlbody { display:flex; align-items:stretch; }
@@ -231,32 +237,6 @@
           <label class="tiny muted" id="abWrap"><input type="checkbox" id="ab" style="vertical-align:-2px"> original</label>
         </div>
         <video id="player" controls preload="metadata"></video>
-        <div class="tlwrap">
-          <div class="tlbar">
-            <span class="tiny muted" id="tlInfo"></span>
-            <div class="spacer"></div>
-            <button class="sm ghost" id="tlOut" title="Zoom out">&minus;</button>
-            <span class="tiny muted mono" id="tlZoom" style="min-width:52px;text-align:center"></span>
-            <button class="sm ghost" id="tlIn" title="Zoom in">+</button>
-            <button class="sm ghost" id="tlFit" title="Fit the whole video">Fit</button>
-          </div>
-          <div class="tlbody">
-            <div class="tlnames" id="tlNames"><div class="pad"></div></div>
-            <div class="tlscroll" id="tlScroll">
-              <div class="tlinner" id="tlInner">
-                <div class="tl-ruler" id="tlRuler"></div>
-                <div id="tlLanes"></div>
-                <div class="tl-play" id="playhead"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="legend">
-          <span><i class="sw" style="background:var(--music)"></i>music</span>
-          <span><i class="sw" style="background:var(--amb)"></i>ambience</span>
-          <span><i class="sw" style="background:var(--sfx)"></i>effect</span>
-          <span><i class="sw" style="background:var(--speech)"></i>speech</span>
-        </div>
 
         <div class="fields" style="margin-top:15px">
           <div class="field"><label>preset</label><select id="preset"></select></div>
@@ -330,6 +310,31 @@
       </div>
     </section>
   </main>
+
+  <div class="tldock hidden">
+        <div class="tlwrap">
+      <div class="tlbar">
+        <span class="tiny muted" id="tlInfo"></span>
+            <span class="legend" style="margin:0"><span><i class="sw" style="background:var(--music)"></i>music</span><span><i class="sw" style="background:var(--amb)"></i>ambience</span><span><i class="sw" style="background:var(--sfx)"></i>effect</span><span><i class="sw" style="background:var(--speech)"></i>speech</span></span>
+        <div class="spacer"></div>
+        <button class="sm ghost" id="tlOut" title="Zoom out">&minus;</button>
+        <span class="tiny muted mono" id="tlZoom" style="min-width:52px;text-align:center"></span>
+        <button class="sm ghost" id="tlIn" title="Zoom in">+</button>
+        <button class="sm ghost" id="tlFit" title="Fit the whole video">Fit</button>
+            <button class="sm ghost" id="tlHide" title="Collapse the timeline">&#9660;</button>
+      </div>
+      <div class="tlbody">
+        <div class="tlnames" id="tlNames"><div class="pad"></div></div>
+        <div class="tlscroll" id="tlScroll">
+          <div class="tlinner" id="tlInner">
+            <div class="tl-ruler" id="tlRuler"></div>
+            <div id="tlLanes"></div>
+            <div class="tl-play" id="playhead"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <dialog id="licenceDlg">
@@ -523,6 +528,7 @@ function showLibrary(fromHistory = false) {
   if (!fromHistory && location.hash) location.hash = '';
   $('#viewLibrary').classList.remove('hidden');
   $('#viewProject').classList.add('hidden');
+  document.querySelector('.tldock').classList.add('hidden');
   $('#btnBack').classList.add('hidden');
   $('#crumb').textContent = '';
   say('');
@@ -544,6 +550,7 @@ async function openProject(name, fromHistory = false) {
   syncPreviewUi();
   $('#viewLibrary').classList.add('hidden');
   $('#viewProject').classList.remove('hidden');
+  document.querySelector('.tldock').classList.remove('hidden');
   $('#btnBack').classList.remove('hidden');
   $('#crumb').textContent = proj.name;
   paintProject();
@@ -635,6 +642,7 @@ function paintPlayer() {
     else if (proj.stage === 'rendered') src = `/media/${proj.name}/video`;
   }
   const player = $('#player');
+  if (proj.width && proj.height) player.style.aspectRatio = `${proj.width}/${proj.height}`;
   const full = src + (src.endsWith('/source') ? '' : `?v=${proj.preview_at || Date.now()}`);
   if (!player.dataset.src || player.dataset.src !== src) {
     player.dataset.src = src;
@@ -867,6 +875,15 @@ function packLanes(cues, gap = 0.05) {
   return lanes.map(l => l.cues);
 }
 
+function reserveDockRoom() {
+  const dock = document.querySelector('.tldock');
+  const view = $('#viewProject');
+  if (!dock || !view) return;
+  const h = dock.classList.contains('hidden') ? 24 : dock.offsetHeight + 18;
+  view.style.paddingBottom = `${h}px`;
+  document.documentElement.style.setProperty('--dock-h', `${h}px`);
+}
+
 function paintTimeline() {
   const dur = videoDuration();
   const lanes = $('#tlLanes');
@@ -954,6 +971,7 @@ function paintTimeline() {
     `${total} cue${total === 1 ? '' : 's'} · ${sfxLanes.length} fx lane${sfxLanes.length === 1 ? '' : 's'}`;
 
   paintPlayhead();
+  reserveDockRoom();
 }
 
 function clipEl(cue, kind, background, x, shape) {
@@ -1075,6 +1093,13 @@ function zoomTimeline(factor) {
 $('#tlIn').onclick = () => zoomTimeline(1.6);
 $('#tlOut').onclick = () => zoomTimeline(1 / 1.6);
 $('#tlFit').onclick = fitTimeline;
+$('#tlHide').onclick = () => {
+  const wrap = document.querySelector('.tlwrap');
+  const hidden = wrap.classList.toggle('collapsed');
+  $('#tlHide').innerHTML = hidden ? '&#9650;' : '&#9660;';
+  $('#tlHide').title = hidden ? 'Show the timeline' : 'Collapse the timeline';
+  reserveDockRoom();
+};
 $('#tlScroll').addEventListener('wheel', e => {
   if (!e.ctrlKey) return;                     // Ctrl+wheel zooms, plain wheel scrolls
   e.preventDefault();
@@ -1095,8 +1120,11 @@ $('#player').addEventListener('timeupdate', () => {
 function markDirty() {
   dirty = true;
   say('unsaved changes', 'danger');
-  // The only signal used to be six grey words in the header, so edits looked lost.
+  // `ghost` must come off, not just `primary` go on: .ghost is defined after .primary in
+  // the stylesheet, so keeping both left a transparent background under the dark text
+  // that .primary sets - an invisible button, exactly when it matters most.
   const btn = $('#btnSave');
+  btn.classList.remove('ghost');
   btn.classList.add('primary');
   btn.textContent = 'Save changes';
 }
@@ -1105,6 +1133,7 @@ function markClean() {
   dirty = false;
   const btn = $('#btnSave');
   btn.classList.remove('primary');
+  btn.classList.add('ghost');
   btn.textContent = 'Save';
 }
 
@@ -1516,6 +1545,7 @@ function routeFromHash() {
 }
 
 window.addEventListener('hashchange', routeFromHash);
+window.addEventListener('resize', () => { reserveDockRoom(); });
 
 loadLibrary()
   .then(routeFromHash)

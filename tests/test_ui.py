@@ -625,3 +625,39 @@ class TestTimeline:
         assert "function routeFromHash(" in page
         assert "hashchange" in page
         assert "#/p/" in page
+
+
+class TestFullWidthLayout:
+    @staticmethod
+    def _page() -> str:
+        from hudka.ui.server import HERE
+
+        return (HERE / "index.html").read_text(encoding="utf-8")
+
+    def test_the_app_uses_the_whole_window(self):
+        """A 1500px cap wasted most of a wide monitor."""
+        page = self._page()
+        assert "max-width:1500px" not in page
+
+    def test_the_timeline_is_a_full_width_dock(self):
+        page = self._page()
+        assert ".tldock" in page and "position:sticky; bottom:0" in page
+
+    def test_the_dock_publishes_its_height_for_the_layout(self):
+        """The sticky preview panel has to stop where the dock starts, and the dock's
+        height changes with lane count, collapse state and window size."""
+        page = self._page()
+        assert "--dock-h" in page
+        assert "function reserveDockRoom(" in page
+
+    def test_the_save_button_stays_visible_when_dirty(self):
+        """.ghost is defined after .primary, so keeping both left dark text on a
+        transparent background - an invisible button, exactly when it matters."""
+        page = self._page()
+        assert "btn.classList.remove('ghost')" in page
+        assert "btn.classList.add('ghost')" in page
+
+    def test_the_video_reserves_its_shape_before_metadata_loads(self):
+        page = self._page()
+        assert "aspect-ratio:16/9" in page
+        assert "player.style.aspectRatio" in page
