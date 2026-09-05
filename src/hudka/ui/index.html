@@ -374,6 +374,7 @@
   <span class="brand">Hudka</span>
   <span id="crumb" class="muted tiny"></span>
   <div class="spacer"></div>
+  <span id="hwLine" class="tiny muted" title=""></span>
   <span id="hstatus" class="tiny muted"></span>
   <button class="ghost sm" id="btnLicences">Licences</button>
   <button class="ghost sm hidden" id="btnBack">&larr; All projects</button>
@@ -479,6 +480,12 @@
               <div class="field"><label>target LUFS</label><input type="number" id="lufs" step="0.5" min="-40" max="-5"></div>
               <div class="field"><label>keep original audio</label>
                 <select id="keepOriginal"><option value="true">yes</option><option value="false">no</option></select></div>
+              <div class="field"><label>quality</label>
+                <select id="quality" title="auto: what this PC's tier chooses. fast: small models, 8 steps, for hearing an idea quickly. best: the biggest model that fits for every cue, one-shots included.">
+                  <option value="auto">auto (best for this PC)</option>
+                  <option value="fast">fast</option>
+                  <option value="best">best (medium for everything)</option>
+                </select></div>
             </div>
             <div id="presetHint" class="tiny muted" style="margin-top:9px"></div>
 
@@ -695,6 +702,11 @@ function renderEngineBanner() {
   const av = lib.engine_available || {};
   const auth = lib.engine_auth || {};
   const host = $('#engineBanner');
+  // What this machine is, in one line, always: "RTX 4070 · 8.6 GB free of 12.9 · best
+  // quality (medium beds)". The hover carries the reason and what to do about it.
+  const hw = lib.hardware || {};
+  $('#hwLine').textContent = hw.summary || '';
+  $('#hwLine').title = hw.reason || '';
 
   if (!av['stable-audio-3-medium']) {
     host.innerHTML = `<div class="banner warn">
@@ -721,6 +733,17 @@ function renderEngineBanner() {
       <div class="tiny muted" style="margin-top:7px">Until then, tick <em>preview</em> before
       rendering to hear timing and mixing with placeholder audio.</div>
     </div>`;
+    return;
+  }
+  // A card that could run the medium model, held back by other applications. Measured:
+  // Premiere Pro open took this 12.9 GB card from 8.6 GB free to 0.5. Say so, and say what
+  // to do - the alternative is a quieter render with no explanation.
+  if (hw.device === 'cuda' && hw.tier === 'gpu-lite' && hw.total_vram_gb >= 10) {
+    host.innerHTML = `<div class="banner warn">
+      <strong>Better quality is available.</strong> This ${escapeHtml(hw.gpu_name || 'GPU')} can run the
+      larger music model, but other applications are holding ${hw.held_by_others_gb} GB of its
+      memory (${hw.free_vram_gb} GB free of ${hw.total_vram_gb}). Close browsers playing video,
+      games and editors, then reload this page.</div>`;
     return;
   }
   host.innerHTML = '';
@@ -1006,12 +1029,13 @@ function shapeNote() {
 
 function paintSettings() {
   const has = !!proj.cues;
-  $$('#preset,#lufs,#keepOriginal').forEach(el => el.disabled = !has);
+  $$('#preset,#lufs,#keepOriginal,#quality').forEach(el => el.disabled = !has);
   $('#preset').innerHTML = Object.keys(lib.presets)
     .map(p => `<option${has && p === proj.cues.preset ? ' selected' : ''}>${p}</option>`).join('');
   if (has) {
     $('#lufs').value = proj.cues.target_lufs;
     $('#keepOriginal').value = String(proj.cues.keep_original_audio);
+    $('#quality').value = proj.cues.quality || 'auto';
     $('#musicBus').value = proj.cues.music_bus_db ?? 0;
     $('#sfxBus').value = proj.cues.sfx_bus_db ?? 0;
     $('#ambBus').value = proj.cues.ambience_bus_db ?? 0;
@@ -2564,8 +2588,14 @@ function field(label, value, attrs, onInput) {
   const lab = document.createElement('label'); lab.textContent = label;
   const input = document.createElement(attrs.tag || 'input');
   if (attrs.tag === 'select') {
-    input.innerHTML = attrs.options.map(o =>
-      `<option${String(o) === String(value) ? ' selected' : ''}>${o}</option>`).join('');
+    // Options are plain strings, or {value, label, disabled} for a choice that must stay
+    // visible but not selectable - with its reason in the label, not hidden.
+    input.innerHTML = attrs.options.map(o => {
+      const opt = (o && typeof o === 'object') ? o : { value: o, label: o };
+      return `<option value="${escapeHtml(String(opt.value))}"`
+        + `${String(opt.value) === String(value) ? ' selected' : ''}`
+        + `${opt.disabled ? ' disabled' : ''}>${escapeHtml(String(opt.label))}</option>`;
+    }).join('');
   } else { Object.assign(input, attrs); input.value = value; }
   input.addEventListener('input', () => {
     // Ignore unparsable intermediates. Clearing "at" to retype it used to read as 0 and
@@ -2579,12 +2609,19 @@ function field(label, value, attrs, onInput) {
   return wrap;
 }
 
-function engineOptions() {
-  const av = lib.engine_available || {};
+/* Every engine, labelled with why it cannot run here when it cannot, and disabled unless
+   it is the cue's current value - which stays enabled so the reason is readable and the
+   choice can be changed. The medium model used to sit here as a plain option on a 12 GB
+   card that would die loading it. */
+function engineOptions(current) {
+  const st = lib.engine_status || {};
   return Object.keys(lib.engines)
     .filter(id => id !== 'mmaudio')                       // excluded: non-commercial weights
-    .filter(id => av[id] !== false || id === 'silence')   // hide engines that cannot run
-    .concat(Object.keys(lib.engines).filter(id => av[id] === false && id !== 'mmaudio'));
+    .map(id => {
+      const s = st[id] || { runnable: true, reason: '' };
+      return { value: id, label: s.reason ? `${id} \u2014 ${s.reason}` : id,
+               disabled: !s.runnable && id !== current };
+    });
 }
 
 function cueCard(cue, kind) {
@@ -2673,7 +2710,7 @@ function cueCard(cue, kind) {
         v => { cue.duck = v === 'true'; }),
     );
   }
-  fields.append(field('engine', cue.engine, { tag: 'select', options: engineOptions() },
+  fields.append(field('engine', cue.engine, { tag: 'select', options: engineOptions(cue.engine) },
     v => { cue.engine = v; }));
 
   // Advanced: tone is free to change, generation costs a regeneration. Grouped and
@@ -2893,7 +2930,7 @@ $$('[data-add]').forEach(btn => {
 
 const numOrNull = v => (v === '' || v === null ? null : parseFloat(v));
 
-['preset', 'lufs', 'keepOriginal', 'musicBus', 'sfxBus', 'ambBus', 'duckDepth']
+['preset', 'lufs', 'keepOriginal', 'quality', 'musicBus', 'sfxBus', 'ambBus', 'duckDepth']
   .forEach(id => {
     $(`#${id}`).addEventListener('change', () => {
       if (!proj.cues) return;
@@ -2904,6 +2941,7 @@ const numOrNull = v => (v === '' || v === null ? null : parseFloat(v));
       proj.cues.preset = $('#preset').value;
       proj.cues.target_lufs = parseFloat($('#lufs').value);
       proj.cues.keep_original_audio = $('#keepOriginal').value === 'true';
+      proj.cues.quality = $('#quality').value;
       proj.cues.music_bus_db = parseFloat($('#musicBus').value) || 0;
       proj.cues.sfx_bus_db = parseFloat($('#sfxBus').value) || 0;
       proj.cues.ambience_bus_db = parseFloat($('#ambBus').value) || 0;

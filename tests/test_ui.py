@@ -664,6 +664,78 @@ class TestLiveMix:
                            json={"cue": reworded}).json()["key"] != first
 
 
+class TestMachineInTheGui:
+    """The page used to expose no hardware information at all, and listed the medium
+    engine as a plain selectable option on a card that would die loading it."""
+
+    @staticmethod
+    def _hw(**kw):
+        from hudka.engines.hardware import Hardware
+
+        base = dict(device="cuda", gpu_name="NVIDIA GeForce RTX 4070", total_vram_gb=12.9,
+                    free_vram_gb=9.0, bf16=True, ram_gb=64.0, cores=24, torch_build="2.7.1+cu128")
+        base.update(kw)
+        return Hardware(**base)
+
+    def test_library_reports_the_machine(self, client):
+        data = client.get("/api/library").json()
+        hw = data["hardware"]
+        assert hw["tier"] in ("cpu", "gpu-lite", "gpu-medium", "gpu-large")
+        assert hw["summary"] and hw["reason"]
+        assert set(hw["plan"]) == {"music", "ambience", "sfx"}
+        assert data["engine_status"]["silence"]["runnable"] is True
+
+    def test_medium_is_labelled_when_the_card_is_busy(self, monkeypatch):
+        from hudka.ui import server as server_mod
+
+        monkeypatch.setattr(server_mod.hardware, "detect", lambda refresh=False: self._hw(free_vram_gb=5.1))
+        monkeypatch.setattr(server_mod, "_engine_availability",
+                            lambda: {"silence": True, "stable-audio-3-medium": True,
+                                     "stable-audio-3-small-sfx": True, "acestep-1.5": False,
+                                     "hunyuan-foley": False})
+        status = server_mod._engine_status()
+        medium = status["stable-audio-3-medium"]
+        assert medium["runnable"] is False
+        assert medium["reason"] == "needs 8.4 GB free VRAM · 5.1 GB now"
+        assert status["stable-audio-3-small-sfx"]["runnable"] is True
+        assert status["acestep-1.5"] == {"installed": False, "runnable": False, "reason": "not installed"}
+
+    def test_medium_is_runnable_when_it_fits(self, monkeypatch):
+        from hudka.ui import server as server_mod
+
+        monkeypatch.setattr(server_mod.hardware, "detect", lambda refresh=False: self._hw(free_vram_gb=9.0))
+        monkeypatch.setattr(server_mod, "_engine_availability",
+                            lambda: {"silence": True, "stable-audio-3-medium": True})
+        assert server_mod._engine_status()["stable-audio-3-medium"]["runnable"] is True
+
+    def test_the_payload_names_what_holds_the_card(self, monkeypatch):
+        from hudka.ui import server as server_mod
+
+        monkeypatch.setattr(server_mod.hardware, "detect", lambda refresh=False: self._hw(free_vram_gb=5.1))
+        hw = server_mod._hardware_payload()
+        assert hw["tier"] == "gpu-lite" and hw["held_by_others_gb"] == 7.8
+        assert "other applications" in hw["reason"]
+        assert hw["plan"]["music"]["engine"] == "stable-audio-3-small-music"
+
+    def test_page_disables_engines_that_cannot_run_here(self):
+        from hudka.ui.server import HERE
+
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        assert "engineOptions(cue.engine)" in page, "the current value must stay enabled"
+        assert "opt.disabled ? ' disabled'" in page
+        assert "lib.engine_status" in page
+        assert 'id="hwLine"' in page and "hw.summary" in page
+        assert "other applications are holding" in page
+
+    def test_page_carries_the_quality_control(self):
+        from hudka.ui.server import HERE
+
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        assert 'id="quality"' in page
+        assert "proj.cues.quality = $('#quality').value" in page
+        assert "$('#quality').value = proj.cues.quality || 'auto'" in page
+
+
 class TestVerdictThroughTheGui:
     def test_render_result_and_project_carry_the_verdict(self, client, project):
         job = wait_for(client, client.post(f"/api/project/{project}/render", json={}).json()["id"])

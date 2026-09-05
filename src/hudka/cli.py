@@ -289,25 +289,50 @@ def doctor() -> None:
             ok = ok and mod in engine_hint
 
     console.print(f"\nmodel cache: [dim]{engines.model_dir()}[/]")
-    try:
-        import torch
 
-        if torch.cuda.is_available():
-            name = torch.cuda.get_device_name(0)
-            vram = torch.cuda.get_device_properties(0).total_memory / 1e9
-            console.print(f"[green]OK  [/] CUDA: {name}, {vram:.1f} GB  [dim]torch {torch.__version__}[/]")
-        elif "+cpu" in torch.__version__:
-            console.print(
-                f"[red]WARN[/] torch {torch.__version__} is the CPU-only build - generation "
-                "will be very slow.\n"
-                "       Installing stable-audio-3 pulls this in by mistake. Fix it with:\n"
-                "       [bold]uv pip install --reinstall torch==2.7.1 torchaudio==2.7.1 "
-                "--torch-backend=cu128[/]"
-            )
-        else:
-            console.print("[yellow]MISS[/] CUDA not available - generation will use CPU")
-    except ImportError:
+    import os
+    from pathlib import Path
+
+    from .engines import hardware
+    from .engines.stable_audio3 import REQUIRED_FILES, StableAudio3Engine
+
+    hw = hardware.detect(refresh=True)
+    if hw.device == "cuda":
+        console.print(f"[green]OK  [/] CUDA: {hw.gpu_name}, {hw.total_vram_gb:.1f} GB total, "
+                      f"[bold]{hw.free_vram_gb:.1f} GB free[/] ({hw.free_source})  "
+                      f"[dim]torch {hw.torch_build}[/]")
+    elif hw.torch_build and "+cpu" in hw.torch_build:
+        console.print(
+            f"[red]WARN[/] torch {hw.torch_build} is the CPU-only build - generation will be "
+            "very slow.\n       Installing stable-audio-3 pulls this in by mistake. Fix it with:\n"
+            "       [bold]uv pip install --reinstall torch==2.7.1 torchaudio==2.7.1 "
+            "--torch-backend=cu128[/]"
+        )
+    elif not hw.torch_build:
         console.print("[yellow]MISS[/] torch  [dim]installed with an engine; see README[/]")
+    else:
+        console.print("[yellow]MISS[/] CUDA not available - generation will use CPU")
+    console.print(f"     RAM {hw.ram_gb:.0f} GB, {hw.cores} threads")
+
+    # The decision the machine drives, in the words the GUI uses.
+    console.print(f"\ntier [bold]{hw.tier.value}[/]: {hardware.reason(hw)}")
+    for kind in ("music", "ambience", "sfx"):
+        console.print(f"     {kind:9s} {hardware.engine_for(kind, hw.tier):28s} "
+                      f"{hardware.steps_for(kind, hw.tier):>2} steps  "
+                      f"{'fp16' if hw.device == 'cuda' else 'fp32'}")
+
+    # Weights on disk, adopting any that are already here under a different cache.
+    console.print("")
+    for variant in ("small-sfx", "small-music", "medium"):
+        engine = StableAudio3Engine(f"stable-audio-3-{variant}")
+        try:
+            engine.preflight(progress=lambda m: console.print(f"     [dim]{m}[/]"))
+        except RuntimeError:
+            pass                                   # the package line above already said so
+        folder = Path(os.environ["HF_HUB_CACHE"]) / engines._repo_folder(engine.repo_id)
+        present = engines.snapshot_complete(folder, REQUIRED_FILES) is not None
+        console.print(f"{'[green]OK  [/]' if present else '[yellow]MISS[/]'} weights {engine.repo_id}"
+                      + ("" if present else "  [dim]downloads on first use[/]"))
 
     if not ok:
         raise typer.Exit(1)

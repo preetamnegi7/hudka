@@ -23,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from .. import analyze as analyze_mod
 from .. import design, engines, mix as mix_mod, presets, render as render_mod
+from ..engines import hardware
 from ..engines.base import GenerateRequest, LicenceError
 from ..schema import CueSheet, VideoInfo
 from .jobs import JobRunner
@@ -328,6 +329,8 @@ def create_app(workspace: Path) -> FastAPI:
                 for engine_id, lic in engines.LICENCE_TABLE.items()
             },
             "engine_available": _engine_availability(),
+            "engine_status": _engine_status(),
+            "hardware": _hardware_payload(),
             "engine_auth": _engine_auth(),
             "jobs": runner.recent(),
         })
@@ -863,12 +866,61 @@ def _engine_availability() -> dict[str, bool]:
                             "stable-audio-3-small-music")),
         ("acestep", ("acestep-1.5",)),
     ):
+        # find_spec, not __import__: importing stable_audio_3 drags torch (and a ~500 MB
+        # of DLLs) into the GUI server, which must stay a thin process that never touches
+        # CUDA. Whether the package actually imports is the worker's preflight to prove.
+        from importlib.util import find_spec
+
         try:
-            __import__(module)
-            present = True
-        except ImportError:
+            present = find_spec(module) is not None
+        except (ImportError, ValueError):
             present = False
         for engine_id in ids:
             available[engine_id] = present
     available["hunyuan-foley"] = (engines.model_dir() / "hunyuan-foley").exists()
     return available
+
+
+def _hardware_payload() -> dict:
+    """What the machine is, right now, in the words the header and the doctor use.
+
+    refresh=True: a page load is the moment a user has just closed something to make room,
+    so the figure must be current. It is one nvidia-smi call (~100 ms), not a poll."""
+    hw = hardware.detect(refresh=True)
+    return {
+        "device": hw.device, "gpu_name": hw.gpu_name, "tier": hw.tier.value,
+        "total_vram_gb": round(hw.total_vram_gb, 1), "free_vram_gb": round(hw.free_vram_gb, 1),
+        "held_by_others_gb": round(hw.held_by_others_gb, 1), "bf16": hw.bf16,
+        "ram_gb": round(hw.ram_gb), "cores": hw.cores,
+        "summary": hardware.summary(hw), "reason": hardware.reason(hw),
+        "plan": {kind: {"engine": hardware.engine_for(kind, hw.tier),
+                        "steps": hardware.steps_for(kind, hw.tier)}
+                 for kind in ("music", "ambience", "sfx")},
+    }
+
+
+def _engine_status() -> dict[str, dict]:
+    """Per engine: installed, runnable HERE, and the one-line reason when it is not.
+
+    `engine_available` answers "is the package importable"; this answers the question the
+    cue card's engine menu actually poses - can this machine run it right now - so the
+    medium model is never a plain, selectable option on a card that would die loading it."""
+    hw = hardware.detect()
+    out: dict[str, dict] = {}
+    for engine_id, installed in _engine_availability().items():
+        reason = ""
+        if not installed:
+            reason = "not installed"
+        elif engine_id == hardware.MEDIUM and hw.device == "cuda" and not hardware.medium_fits(120.0, hw):
+            reason = (f"needs {hardware.medium_need_gb(120.0, hw):.1f} GB free VRAM · "
+                      f"{hw.free_vram_gb:.1f} GB now")
+        elif engine_id == hardware.MEDIUM and hw.device == "cpu":
+            reason = "very slow without a GPU"
+        elif engines.LICENCE_TABLE[engine_id].requires_optin:
+            reason = "opt-in · licence excludes the EU, UK and South Korea"
+        out[engine_id] = {
+            "installed": installed,
+            "runnable": installed and not reason.startswith(("needs", "not installed")),
+            "reason": reason,
+        }
+    return out
