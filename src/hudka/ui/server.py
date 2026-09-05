@@ -963,7 +963,10 @@ def _engine_status() -> dict[str, dict]:
     for engine_id, installed in _engine_availability().items():
         reason = ""
         if not installed:
-            reason = "not installed"
+            # Stable Audio 3 is the stack Setup.bat installs; anything else missing is a
+            # choice, not a broken install - and "not installed" alone read as a failure.
+            reason = ("not installed" if engine_id.startswith("stable-audio-3")
+                      else "optional · not installed by Setup")
         elif engine_id == hardware.MEDIUM and hw.device == "cuda" and not hardware.medium_fits(120.0, hw):
             reason = (f"needs {hardware.medium_need_gb(120.0, hw):.1f} GB free VRAM · "
                       f"{hw.free_vram_gb:.1f} GB now")

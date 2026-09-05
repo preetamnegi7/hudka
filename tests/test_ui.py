@@ -736,7 +736,8 @@ class TestMachineInTheGui:
         assert medium["runnable"] is False
         assert medium["reason"] == "needs 8.4 GB free VRAM · 5.1 GB now"
         assert status["stable-audio-3-small-sfx"]["runnable"] is True
-        assert status["acestep-1.5"] == {"installed": False, "runnable": False, "reason": "not installed"}
+        assert status["acestep-1.5"] == {"installed": False, "runnable": False,
+                                          "reason": "optional · not installed by Setup"}
 
     def test_medium_is_runnable_when_it_fits(self, monkeypatch):
         from hudka.ui import server as server_mod
