@@ -107,10 +107,17 @@ def generate_stems(
     for engine in built.values():
         require_usable(engine, allow_noncommercial=allow_noncommercial, opted_in=opted)
 
+    import inspect
+
     for engine in built.values():
         preflight = getattr(engine, "preflight", None)
         if callable(preflight):
-            preflight()
+            # Newer engines take a progress callback (adopting weights already on disk
+            # reports what it copies); older ones do not.
+            if "progress" in inspect.signature(preflight).parameters:
+                preflight(progress=say)
+            else:
+                preflight()
 
     for engine_id, cues in by_engine.items():
         engine = built[engine_id]
@@ -456,8 +463,9 @@ _EXIT_MEANINGS = {
 def _explain_exit(code: int, stderr: str) -> str:
     """A cause a person can act on, from the exit status and whatever stderr holds."""
     if "CUDA out of memory" in stderr or "OutOfMemoryError" in stderr:
-        return ("CUDA ran out of VRAM. Use the small engines - stable-audio-3-small-sfx "
-                "for effects, stable-audio-3-small-music for beds - which peak near 2 GB.")
+        return ("CUDA ran out of VRAM. Close other GPU applications (`hudka doctor` shows "
+                "how much is free), or use the small engines - stable-audio-3-small-sfx for "
+                "effects, stable-audio-3-small-music for beds - which peak near 2 GB.")
     normalised = code & 0xFFFFFFFF
     if normalised in _EXIT_MEANINGS:
         return _EXIT_MEANINGS[normalised]

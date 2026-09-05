@@ -63,6 +63,16 @@ MIN_RELIABLE_SECONDS = 2.0
 #: A generation whose peak-to-RMS is below this is saturated, not audio.
 SATURATION_CREST_DB = 6.0
 
+#: What a complete snapshot must hold. The T5Gemma text encoder lives inside the same
+#: repository as a subfolder, so a checkpoint without it is not a usable download.
+REQUIRED_FILES = (
+    "model.safetensors",
+    "model_config.json",
+    "t5gemma-b-b-ul2/model.safetensors",
+    "t5gemma-b-b-ul2/config.json",
+    "t5gemma-b-b-ul2/tokenizer.json",
+)
+
 _STEPS_BY_VARIANT = {
     "medium": BED_STEPS,
     "small-music": BED_STEPS,
@@ -104,9 +114,16 @@ class StableAudio3Engine(Engine):
             ) from exc
         return StableAudioModel
 
-    def preflight(self) -> None:
-        """Fail before any cue is attempted if the package is not importable."""
-        self._require_package()
+    def preflight(self, progress=None) -> None:
+        """Fail before any cue is attempted if the package is not importable - and adopt
+        weights that are already on this machine rather than downloading them again."""
+        self._require_package()               # the install message comes first, always
+        from . import adopt_from_default_cache
+
+        try:
+            adopt_from_default_cache(self.repo_id, progress=progress)
+        except Exception as exc:              # adoption is a convenience, never a blocker
+            (progress or (lambda _: None))(f"warning: could not adopt weights: {exc}")
 
     def _resolve_device(self) -> str:
         if self.device:
@@ -122,17 +139,75 @@ class StableAudio3Engine(Engine):
         if self._model is not None:
             return self._model
         StableAudioModel = self._require_package()
-        # Weight location is controlled by the Hugging Face cache (HF_HOME), set in
-        # `engines.__init__` - `from_pretrained` takes no cache argument of its own.
+        device = self._resolve_device()
+        if device == "cuda":
+            self._guard_vram()
+        # Stage on the CPU, cast, THEN move. The library's own path
+        # (loading_utils.load_diffusion_cond) does model.to(device) first and
+        # .to(float16) second, which parks the whole 9.2 GB float32 medium checkpoint on
+        # the card before halving it - on a 12 GB card with a desktop on it, that is the
+        # crash with no traceback. Weight location is still the Hugging Face cache
+        # (HF_HUB_CACHE) set in `engines.__init__`; from_pretrained takes no cache argument.
         try:
-            self._model = StableAudioModel.from_pretrained(
-                self.variant, device=self._resolve_device()
-            )
+            model = StableAudioModel.from_pretrained(self.variant, device="cpu", model_half=False)
         except Exception as exc:
             if _is_gated(exc):
                 raise RuntimeError(self._gated_message()) from exc
             raise
-        return self._model
+        if device != "cpu":
+            import torch
+
+            model.model.to(torch.float16)     # DiT + VAE: what Stability ships and measured
+            encoder = self._text_encoder(model)
+            if encoder is not None and torch.cuda.is_bf16_supported():
+                # The T5Gemma encoder is kept in the conditioner's __dict__, not as a
+                # submodule, so the cast above never reaches it and it would land on the
+                # card in fp32 (1.13 GB). bf16 is Gemma's native dtype and halves that.
+                encoder.to(torch.bfloat16)
+            model.model.to(device)
+            model.device = device
+            model.model_half = True
+        self._model = model
+        return model
+
+    @staticmethod
+    def _text_encoder(model):
+        """The text encoder module, wherever the library keeps it - or None."""
+        try:
+            conditioners = model.model.conditioner.conditioners
+        except AttributeError:  # pragma: no cover - library layout changed
+            return None
+        for cond in (conditioners.values() if hasattr(conditioners, "values") else []):
+            encoder = getattr(cond, "__dict__", {}).get("model")
+            if encoder is not None and hasattr(encoder, "to"):
+                return encoder
+        return None
+
+    def _guard_vram(self) -> None:
+        """Refuse to load medium into VRAM it cannot fit, instead of dying without a trace.
+
+        Measured right before loading, in this (worker) process. Deliberately an error and
+        not a silent swap: by now the parent has keyed the stem and written the ledger
+        entry for THIS engine, and audio from another model under that name would be a
+        provenance lie. The graceful swap lives in render.plan_generation, upstream of the
+        key. An unknown free figure (no nvidia-smi, no torch probe) does not refuse.
+        """
+        if self.variant != "medium":
+            return
+        from . import hardware
+
+        hw = hardware.detect(refresh=True)
+        if not hw.free_vram_gb:
+            return
+        need = hardware.medium_need_gb(120.0, hw)
+        if hw.free_vram_gb < need:
+            raise RuntimeError(
+                f"{self.id} needs about {need:.1f} GB of free VRAM and {hw.free_vram_gb:.1f} GB "
+                f"is free right now on the {hw.gpu_name or 'GPU'} ({hw.total_vram_gb:.1f} GB "
+                f"total; other applications hold {hw.held_by_others_gb:.1f} GB).\n"
+                "  Close GPU-heavy applications (browsers playing video, games, editors) and "
+                "render again,\n  or set the bed's engine to stable-audio-3-small-music."
+            )
 
     def _gated_message(self) -> str:
         return (

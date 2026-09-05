@@ -24,6 +24,7 @@ from .licences import (
 __all__ = [
     "Engine", "GenerateRequest", "Licence", "LicenceError", "require_usable",
     "build", "model_dir", "DEFAULT_ENGINES", "LICENCE_TABLE",
+    "adopt_from_default_cache", "snapshot_complete",
 ]
 
 #: Sensible default engine per cue kind — the worldwide-safe stack.
@@ -169,6 +170,121 @@ def _point_hf_cache_at_model_dir() -> None:
 
 
 _point_hf_cache_at_model_dir()
+
+
+# ------------------------------------------------- weights already on this machine
+
+#: The only repositories adoption will ever copy. Structural, not a comment: the default
+#: cache on the development machine also holds facebook/musicgen-small, whose weights are
+#: CC-BY-NC, and nothing in this codebase may ever point at it.
+ADOPTABLE_PREFIX = "stabilityai/stable-audio-3-"
+
+
+def _default_hf_cache() -> Path:
+    """Where huggingface_hub puts things when nobody redirects it (~/.cache/huggingface/hub).
+
+    Not HF_HUB_CACHE - that is the app cache we redirect TO. The two differ on any machine
+    that downloaded weights before Hudka pointed the cache elsewhere.
+    """
+    from huggingface_hub import constants
+
+    return Path(constants.default_cache_path)
+
+
+def _repo_folder(repo_id: str) -> str:
+    return "models--" + repo_id.replace("/", "--")
+
+
+def snapshot_complete(repo_dir: Path, required: tuple[str, ...]) -> Path | None:
+    """The snapshot directory if `repo_dir` holds a complete revision, else None."""
+    try:
+        sha = (repo_dir / "refs" / "main").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    snap = repo_dir / "snapshots" / sha
+    blobs = repo_dir / "blobs"
+    if blobs.is_dir() and any(blobs.glob("*.incomplete")):
+        return None
+    for rel in required:                      # Path.exists() follows the symlinks
+        f = snap / rel
+        try:
+            if not f.exists() or f.stat().st_size == 0:
+                return None
+        except OSError:
+            return None
+    return snap
+
+
+def _copy_tree(src: Path, dst: Path, say) -> None:
+    """Copy an HF repo folder. Relative symlinks are recreated where the OS allows and
+    dereferenced where it does not; `*.incomplete` and lock files are left behind."""
+    total = sum(p.stat().st_size for p in src.rglob("*")
+                if p.is_file() and not p.is_symlink())
+    done, last = 0, -1
+    for root, _dirs, files in os.walk(src, followlinks=False):
+        rel = Path(root).relative_to(src)
+        (dst / rel).mkdir(parents=True, exist_ok=True)
+        for name in files:
+            if name.endswith(".incomplete") or name.endswith(".lock"):
+                continue
+            s, d = Path(root) / name, dst / rel / name
+            if s.is_symlink():
+                target = os.readlink(s)
+                try:
+                    os.symlink(target, d)
+                except OSError:
+                    shutil.copy2(s.resolve(), d)
+                continue
+            shutil.copy2(s, d)
+            done += s.stat().st_size
+            pct = int(done * 10 / total) if total else 10
+            if pct != last:
+                last = pct
+                say(f"  copied {done / 1e9:.1f} / {total / 1e9:.1f} GB")
+
+
+def adopt_from_default_cache(repo_id: str, progress=None) -> Path | None:
+    """Copy a complete snapshot from the default HF cache into the app cache.
+
+    The medium checkpoint was found fully downloaded on the development machine - 9.2 GB,
+    authorised - in the cache Hudka never reads, because the app redirects HF_HUB_CACHE
+    off the system drive. Downloading it again would be absurd.
+
+    Copies, never moves, so whatever put the weights there keeps working. Reads nothing
+    outside `repo_id`'s own folder, and only Stable Audio 3 repositories are eligible.
+    Copies into a sibling `.adopting` directory and renames at the end, so the library can
+    never see a half-copied folder. Returns the adopted folder, or None when there was
+    nothing to do.
+    """
+    if not repo_id.startswith(ADOPTABLE_PREFIX):
+        raise ValueError(f"{repo_id} is not adoptable: only Stable Audio 3 weights are")
+    say = progress or (lambda _: None)
+    from .stable_audio3 import REQUIRED_FILES
+
+    app_cache = Path(os.environ["HF_HUB_CACHE"])
+    folder = _repo_folder(repo_id)
+    dst, src = app_cache / folder, _default_hf_cache() / folder
+    if dst.exists() and src.resolve() == dst.resolve():
+        return None                           # the app cache IS the default cache here
+    if snapshot_complete(dst, REQUIRED_FILES) or not snapshot_complete(src, REQUIRED_FILES):
+        return None
+
+    size = sum(p.stat().st_size for p in src.rglob("*") if p.is_file() and not p.is_symlink())
+    say(f"adopting {repo_id} from {src.parent} ({size / 1e9:.1f} GB) - copying, the original stays")
+    staging = app_cache / (folder + ".adopting")
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        app_cache.mkdir(parents=True, exist_ok=True)
+        _copy_tree(src, staging, say)
+        if dst.exists():                      # something raced us; theirs wins
+            shutil.rmtree(staging, ignore_errors=True)
+            return None
+        os.replace(staging, dst)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    say(f"adopted {repo_id}")
+    return dst
 
 
 @lru_cache(maxsize=None)

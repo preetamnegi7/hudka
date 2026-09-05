@@ -16,6 +16,7 @@ code the parent can report properly.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,10 @@ def main() -> int:
     job = json.loads(sys.stdin.read())
     engine_id: str = job["engine"]
     device: str | None = job.get("device")
+
+    # This process is about to create a CUDA context anyway, so the hardware probe may
+    # fall back to torch here when nvidia-smi is not on PATH. The GUI server never may.
+    os.environ.setdefault("HUDKA_ALLOW_TORCH_PROBE", "1")
 
     from .engines import build
     from .engines.base import GenerateRequest
