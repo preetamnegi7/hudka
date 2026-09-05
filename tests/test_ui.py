@@ -477,6 +477,37 @@ class TestPreviewThroughTheGui:
         # The green success path must be unreachable for a preview result.
         assert "if (r.preview) {" in page
 
+    def test_a_preview_over_a_finished_render_still_announces_itself(self, client, project):
+        """The case that got through: every other preview test starts from a project that
+        was never rendered, where the stage stays 'designed'. Preview an already-rendered
+        project and the stage stays 'rendered' - and the page's banner used to be gated on
+        `proj.stage !== 'rendered'`, so the one warning that says "this is not real audio"
+        was wiped by the refresh that runs immediately after the render finishes."""
+        wait_for(client, client.post(f"/api/project/{project}/render", json={}).json()["id"])
+        first = client.get(f"/api/project/{project}").json()
+        assert first["stage"] == "rendered"
+        assert first["rendered_at"] is not None
+        assert first["has_preview"] is False
+
+        job = wait_for(client, client.post(f"/api/project/{project}/render",
+                                           json={"preview": True}).json()["id"])
+        assert job["result"]["preview"] is True
+
+        after = client.get(f"/api/project/{project}").json()
+        assert after["stage"] == "rendered", "a preview must not undo a finished render"
+        assert after["has_preview"] is True
+        assert after["rendered_at"] == first["rendered_at"], \
+            "a preview must not touch final.mp4"
+        assert after["preview_at"] is not None
+
+        from hudka.ui.server import HERE
+
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        assert "if (viewPreview && proj.has_preview) {" in page, \
+            "the preview banner must not be gated on the stage"
+        # The two videos must cache-bust independently, or a re-render serves the old cut.
+        assert "src.endsWith('/preview') ? proj.preview_at : proj.rendered_at" in page
+
 
 class TestVerdictThroughTheGui:
     def test_render_result_and_project_carry_the_verdict(self, client, project):

@@ -118,6 +118,7 @@ def create_app(workspace: Path) -> FastAPI:
             stage = "imported"
 
         preview_file = project / render_mod.PREVIEW_DIR / "preview.mp4"
+        final_file = project / "final.mp4"
         report = read_json(project / "render_report.json")
         return {
             "name": project.name,
@@ -125,6 +126,10 @@ def create_app(workspace: Path) -> FastAPI:
             "verdict": report.get("verdict") if report else None,
             "has_preview": preview_file.exists(),
             "preview_at": preview_file.stat().st_mtime if preview_file.exists() else None,
+            # The page cache-busts the player on these. They must be separate: a real
+            # render does not touch preview.mp4, so keying the finished video on the
+            # preview's timestamp hands back a stale URL after every re-render.
+            "rendered_at": final_file.stat().st_mtime if final_file.exists() else None,
             "busy": bool(active),
             "job": active.as_dict() if active else None,
             "duration": video.get("duration", 0),

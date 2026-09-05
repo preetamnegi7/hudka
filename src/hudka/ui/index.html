@@ -848,10 +848,17 @@ function paintSteps() {
 
 function paintBanner() {
   const host = $('#projBanner');
-  if (viewPreview && proj.has_preview && proj.stage !== 'rendered') {
+  /* Whenever a preview is what the player is showing - including over a project that
+     has already been rendered for real, which is the common case and the one this was
+     gated out of. startPoll sets this same warning, then the refresh that follows it
+     calls paintBanner; with a stage test here that refresh silently wiped the warning
+     and a preview looked exactly like the finished thing. */
+  if (viewPreview && proj.has_preview) {
     host.innerHTML = `<div class="banner warn">
       <strong>Showing a preview.</strong> Placeholder tones, not real audio.
-      Untick <em>preview</em> and press <strong>Render</strong> to generate sound.</div>`;
+      ${proj.stage === 'rendered'
+        ? 'Your finished render is still there - untick <em>preview</em> and press <strong>Re-render</strong>, or reload the project, to hear it again.'
+        : 'Untick <em>preview</em> and press <strong>Render</strong> to generate sound.'}</div>`;
     return;
   }
   if (proj.report && proj.report.verdict === 'warn' && proj.stage === 'rendered'
@@ -892,7 +899,11 @@ function paintPlayer() {
   }
   const player = $('#player');
   if (proj.width && proj.height) player.style.aspectRatio = `${proj.width}/${proj.height}`;
-  const full = src + (src.endsWith('/source') ? '' : `?v=${proj.preview_at || Date.now()}`);
+  // Each source gets its OWN timestamp. Keying the finished video on preview_at meant
+  // the URL did not change when it was re-rendered, so the browser could keep serving
+  // the previous cut.
+  const stamp = src.endsWith('/preview') ? proj.preview_at : proj.rendered_at;
+  const full = src + (src.endsWith('/source') ? '' : `?v=${stamp || Date.now()}`);
   if (!player.dataset.src || player.dataset.src !== src) {
     player.dataset.src = src;
     player.src = full;
