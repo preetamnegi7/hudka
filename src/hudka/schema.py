@@ -156,6 +156,12 @@ class CueSheet(BaseModel):
     version: int = 1
     video: VideoInfo
     preset: str = "short-form"
+    #: auto = what this machine's tier chooses; fast = the small models at 8 steps for
+    #: every kind, to hear an idea quickly; best = the biggest model that fits for every
+    #: kind, one-shots included (one worker, no model swap). Per sheet, not per app: it
+    #: changes cache keys and what the ledger records, so it belongs in the document of
+    #: record. `best` is experimental until small-sfx vs medium has been listened to.
+    quality: Literal["auto", "fast", "best"] = "auto"
     target_lufs: Annotated[float, Field(ge=-40.0, le=-5.0)] = -14.0
     true_peak_db: Annotated[float, Field(ge=-9.0, le=0.0)] = -1.0
     # Keep the source audio (dialogue/voiceover) in the mix. Turned off for silent footage.

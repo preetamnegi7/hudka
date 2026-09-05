@@ -269,21 +269,30 @@ def create_app(workspace: Path) -> FastAPI:
             start = float(cue["start"]) if is_bed else float(cue.get("at", 0))
         except (TypeError, ValueError, KeyError):
             raise HTTPException(status_code=422, detail="cue is missing its times")
-        extra = {}
-        for field_name in ("steps", "cfg_scale", "negative_prompt"):
-            if cue.get(field_name) not in (None, ""):
-                extra[field_name] = cue[field_name]
+        # The same resolver generate_stems uses, so "stale" means exactly "the render
+        # would produce a different file". A medium cue at the VRAM threshold can flip
+        # between fresh and stale as other apps come and go - because the render really
+        # would use a different model - which is why the planned engine comes back too.
+        kind = payload.get("kind") or ("music" if is_bed else "sfx")
+        saved = read_json(project_dir(name) / "cues.json")
+        quality = payload.get("quality") or saved.get("quality") or "auto"
+        plan = render_mod.plan_generation(
+            engine_id, kind, duration,
+            steps=cue.get("steps") if cue.get("steps") not in (None, "") else None,
+            cfg_scale=cue.get("cfg_scale") if cue.get("cfg_scale") not in (None, "") else None,
+            negative_prompt=cue.get("negative_prompt") or "", quality=quality,
+        )
         video = None
-        if engine_id == "hunyuan-foley":
+        if plan.engine == "hunyuan-foley":
             try:
                 video = _resolve_source(project_dir(name))
             except HTTPException:
                 video = None
         req = GenerateRequest(
             prompt=cue.get("prompt", ""), duration=duration, seed=int(cue.get("seed", 0)),
-            video=video, window=(start, start + duration), extra=extra,
+            video=video, window=(start, start + duration), extra=plan.extra,
         )
-        return JSONResponse({"key": req.cache_key(engine_id)})
+        return JSONResponse({"key": req.cache_key(plan.engine), "engine": plan.engine})
 
     # ------------------------------------------------------------------ page
 

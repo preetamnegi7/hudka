@@ -25,6 +25,7 @@ import numpy as np
 
 from . import balance, engines, mix, presets, qa
 from .audio import write_wav
+from .engines import hardware
 from .engines.base import GenerateRequest, require_usable
 from .provenance import Ledger
 from .schema import BedCue, CueSheet, SfxCue
@@ -52,6 +53,68 @@ class RenderResult:
     #: let pure noise through with a green tick; this is what says whether it is sound.
     quality: "qa.RenderQuality | None" = None
     verdict: str = "ok"
+
+
+@dataclass(frozen=True)
+class Plan:
+    """Which engine runs a cue and what it is told - the two things a stem's cache key and
+    its ledger entry must both be computed from."""
+
+    engine: str
+    extra: dict
+
+
+def plan_generation(engine_id: str, kind: str, duration: float, *,
+                    steps: int | None, cfg_scale: float | None, negative_prompt: str,
+                    quality: str = "auto", hw: "hardware.Hardware | None" = None,
+                    notes: list[str] | None = None, cue_id: str = "") -> Plan:
+    """Resolve a cue's engine and generation settings for THIS machine.
+
+    Substitutions happen here, before any key is computed, so the file name, the ledger
+    and the audio always describe the same model. The worker never swaps engines.
+
+    - A medium cue on a GPU that cannot fit it right now falls back to the small model of
+      its kind, with a note the render surfaces as a warning naming the cue and the GB.
+    - `quality=fast` puts every kind on the small models at 8 steps.
+    - `quality=best` puts one-shots on medium too, when it fits (one model, no swap).
+    - The RESOLVED `steps` always enters `extra` for Stable Audio engines, so a tier change
+      invalidates exactly the stems it changes. Before this, steps entered the key only
+      when the cue set them, and changing an engine default silently reused every stem -
+      the user heard the old audio and concluded nothing had happened. The stub gets no
+      steps, so every test-suite key is unchanged.
+    """
+    hw = hw or hardware.detect()
+    if notes is None:
+        notes = []
+    small = hardware.SMALL_FOR_KIND.get(kind, engines.DEFAULT_ENGINES["sfx"])
+    on_gpu = hw.device == "cuda"
+
+    if engine_id == hardware.MEDIUM and on_gpu:
+        if quality == "fast":
+            engine_id = small
+        elif not hardware.medium_fits(duration, hw):
+            engine_id = small
+            notes.append(
+                f"stable-audio-3-medium needs about {hardware.medium_need_gb(duration, hw):.1f} GB "
+                f"of free VRAM for a {duration:.0f}s {kind} and {hw.free_vram_gb:.1f} GB is free "
+                f"(other applications hold {hw.held_by_others_gb:.1f} GB); "
+                f"{cue_id or 'the cue'} will use {engine_id}. Close other GPU applications and "
+                "render again to use medium.")
+    elif (quality == "best" and kind == "sfx" and engine_id == engines.DEFAULT_ENGINES["sfx"]
+          and hw.tier in (hardware.Tier.GPU_MEDIUM, hardware.Tier.GPU_LARGE)
+          and hardware.medium_fits(duration, hw)):
+        engine_id = hardware.MEDIUM              # the single-model lane, opt-in until measured
+
+    extra: dict = {}
+    if engine_id.startswith("stable-audio-3"):
+        extra["steps"] = steps if steps is not None else hardware.steps_for(kind, hw.tier, quality)
+    elif steps is not None:
+        extra["steps"] = steps
+    if cfg_scale is not None:
+        extra["cfg_scale"] = cfg_scale
+    if negative_prompt:
+        extra["negative_prompt"] = negative_prompt
+    return Plan(engine_id, extra)
 
 
 def _kind_of(cue: SfxCue | BedCue, sheet: CueSheet) -> str:
@@ -88,9 +151,24 @@ def generate_stems(
     cache_dir.mkdir(parents=True, exist_ok=True)
     video_path = Path(sheet.video.path)
 
+    # Plan every cue first: the engine that will actually run it on this machine and the
+    # settings it will be told. Grouping, keys and the ledger all follow the plan.
+    hw = hardware.detect()
+    quality = getattr(sheet, "quality", "auto")
+    notes: list[str] = []
+    plans: dict[str, Plan] = {
+        cue.id: plan_generation(
+            cue.engine, _kind_of(cue, sheet), cue.duration,
+            steps=cue.steps, cfg_scale=cue.cfg_scale, negative_prompt=cue.negative_prompt,
+            quality=quality, hw=hw, notes=notes, cue_id=cue.id)
+        for cue in sheet.all_cues()
+    }
+    for note in dict.fromkeys(notes):
+        say(f"warning: {note}")
+
     by_engine: dict[str, list[SfxCue | BedCue]] = defaultdict(list)
     for cue in sheet.all_cues():
-        by_engine[cue.engine].append(cue)
+        by_engine[plans[cue.id].engine].append(cue)
 
     stems: dict[str, Path] = {}
     cached = generated = 0
@@ -130,15 +208,7 @@ def generate_stems(
             window = ((cue.start, cue.end) if isinstance(cue, BedCue)
                       else (cue.at, cue.at + cue.duration))
 
-            # Only non-default generation options enter `extra`, so a sheet that sets
-            # none of them keeps the cache keys it already had.
-            extra = {}
-            if cue.steps is not None:
-                extra["steps"] = cue.steps
-            if cue.cfg_scale is not None:
-                extra["cfg_scale"] = cue.cfg_scale
-            if cue.negative_prompt:
-                extra["negative_prompt"] = cue.negative_prompt
+            extra = dict(plans[cue.id].extra)
 
             req = GenerateRequest(
                 prompt=cue.prompt,
@@ -178,10 +248,12 @@ def generate_stems(
                 })
 
             stems[cue.id] = dest
+            describe = getattr(engine, "describe", None)
             ledger.add(
                 cue_id=cue.id, kind=kind, file=dest, engine_id=engine_id,
                 licence=engine.licence, prompt=cue.prompt, seed=cue.seed,
                 duration=duration, cached=was_cached,
+                settings=describe(req) if callable(describe) else {},
             )
 
         if pending:
@@ -581,13 +653,13 @@ def generate_variations(
     takes_dir = out_dir / "takes" / cue_id
     takes_dir.mkdir(parents=True, exist_ok=True)
 
-    extra = {}
-    if cue.steps is not None:
-        extra["steps"] = cue.steps
-    if cue.cfg_scale is not None:
-        extra["cfg_scale"] = cue.cfg_scale
-    if cue.negative_prompt:
-        extra["negative_prompt"] = cue.negative_prompt
+    # The same resolver the render uses, or a take is generated with different settings
+    # from the stem it is standing in for.
+    plan = plan_generation(
+        cue.engine, _kind_of(cue, sheet), cue.duration,
+        steps=cue.steps, cfg_scale=cue.cfg_scale, negative_prompt=cue.negative_prompt,
+        quality=getattr(sheet, "quality", "auto"), cue_id=cue.id)
+    extra = dict(plan.extra)
 
     duration = cue.duration
     pending, results = [], []

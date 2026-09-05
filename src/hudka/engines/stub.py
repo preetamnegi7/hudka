@@ -46,6 +46,9 @@ class SilenceEngine(Engine):
     licence: Licence = PUBLIC_DOMAIN
     kinds = ("sfx", "music", "ambience")
 
+    def describe(self, req: GenerateRequest) -> dict:
+        return {"engine": self.id}
+
     def generate(self, req: GenerateRequest, out_path: Path) -> Path:
         n = max(1, int(round(req.duration * SAMPLE_RATE)))
         out = np.zeros(n, dtype=np.float32)

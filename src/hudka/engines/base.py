@@ -114,6 +114,15 @@ class Engine(Protocol):
         """Free VRAM. Called between stages — 12GB can't hold every model at once."""
         ...
 
+    def describe(self, req: GenerateRequest) -> dict:
+        """What actually reaches the model for `req`: device, precision, steps, variant.
+
+        Recorded per stem by the Ledger, so a licence report can say "cuda · fp16 · 50
+        steps" rather than leaving reproduction to guesswork. Must be computable without
+        loading weights, and without importing torch - the parent process asks.
+        """
+        ...
+
 
 def require_usable(engine: Engine, *, allow_noncommercial: bool, opted_in: set[str]) -> None:
     """Gate an engine before it runs. Raises LicenceError if it isn't cleared."""

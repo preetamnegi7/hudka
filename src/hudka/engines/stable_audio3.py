@@ -15,6 +15,7 @@ Variants:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -126,14 +127,36 @@ class StableAudio3Engine(Engine):
             (progress or (lambda _: None))(f"warning: could not adopt weights: {exc}")
 
     def _resolve_device(self) -> str:
+        """cuda or cpu. From the hardware probe, so the GUI server never imports torch;
+        inside a worker (HUDKA_ALLOW_TORCH_PROBE=1) torch has the last word, because a
+        CUDA wheel on a machine whose runtime is broken must still fall back."""
         if self.device:
             return self.device
-        try:
-            import torch
+        from . import hardware
 
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:  # pragma: no cover
-            return "cpu"
+        device = hardware.detect().device
+        if device == "cuda" and os.environ.get("HUDKA_ALLOW_TORCH_PROBE") == "1":
+            try:
+                import torch
+
+                if not torch.cuda.is_available():
+                    device = "cpu"
+            except ImportError:  # pragma: no cover
+                device = "cpu"
+        return device
+
+    def describe(self, req: GenerateRequest) -> dict:
+        from . import hardware
+
+        device = self._resolve_device()
+        hw = hardware.detect()
+        return {
+            "engine": self.id, "variant": self.variant, "device": device,
+            "precision": "fp16" if device == "cuda" else "fp32",
+            "text_encoder": "bf16" if device == "cuda" and hw.bf16 else "fp32",
+            "steps": int(req.extra.get("steps") or self._effective_steps()),
+            "cfg_scale": req.extra.get("cfg_scale", 1.0),
+        }
 
     def _load(self):
         if self._model is not None:

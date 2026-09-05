@@ -35,6 +35,22 @@ class Record:
     territory_exclusions: tuple[str, ...] = ()
     training_data: str = ""
     cached: bool = False
+    #: What reached the model: device, precision, steps, variant (Engine.describe).
+    settings: dict = field(default_factory=dict)
+
+
+def settings_text(settings: dict) -> str:
+    """'cuda · fp16 · 50 steps' - or '' for an engine that has nothing to say."""
+    if not settings:
+        return ""
+    bits = []
+    if settings.get("device"):
+        bits.append(str(settings["device"]))
+    if settings.get("precision"):
+        bits.append(str(settings["precision"]))
+    if settings.get("steps") is not None:
+        bits.append(f"{settings['steps']} steps")
+    return " · ".join(bits)
 
 
 @dataclass
@@ -48,8 +64,10 @@ class Ledger:
     preview: bool = False
 
     def add(self, *, cue_id: str, kind: str, file: Path, engine_id: str, licence: Licence,
-            prompt: str, seed: int, duration: float, cached: bool = False) -> None:
+            prompt: str, seed: int, duration: float, cached: bool = False,
+            settings: dict | None = None) -> None:
         self.records.append(Record(
+            settings=dict(settings or {}),
             cue_id=cue_id, kind=kind, file=Path(file).name, engine=engine_id,
             licence=licence.name, licence_url=licence.url, commercial_use=licence.commercial,
             prompt=prompt, seed=seed, duration=round(duration, 3),
@@ -147,15 +165,16 @@ class Ledger:
             lines.append(f"- **Assets from this model:** {count}")
             lines.append("")
 
-        lines += ["## Assets", "", "| Cue | Kind | File | Engine | Seed | Length | Prompt |",
-                  "|---|---|---|---|---|---|---|"]
+        lines += ["## Assets", "",
+                  "| Cue | Kind | File | Engine | Settings | Seed | Length | Prompt |",
+                  "|---|---|---|---|---|---|---|---|"]
         for r in self.records:
             prompt = r.prompt.replace("|", "/")
             if len(prompt) > 70:
                 prompt = prompt[:67] + "..."
             lines.append(
-                f"| {r.cue_id} | {r.kind} | `{r.file}` | {r.engine} | {r.seed} "
-                f"| {r.duration:.2f}s | {prompt} |"
+                f"| {r.cue_id} | {r.kind} | `{r.file}` | {r.engine} | {settings_text(r.settings)} "
+                f"| {r.seed} | {r.duration:.2f}s | {prompt} |"
             )
 
         lines += ["", "---", "",
