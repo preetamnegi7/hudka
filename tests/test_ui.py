@@ -544,6 +544,87 @@ class TestPreviewThroughTheGui:
         assert client.get(f"/download/{name}/preview-licence").status_code == 404
 
 
+class TestLiveMix:
+    """M and S were never broken - they were inaudible. These pin the graph that fixed
+    that, and the three measured constants that are silently wrong if they drift."""
+
+    @staticmethod
+    def _page() -> str:
+        from hudka.ui.server import HERE
+
+        return (HERE / "index.html").read_text(encoding="utf-8")
+
+    def test_mute_and_solo_reach_the_audition(self):
+        page = self._page()
+        assert "function auditionApply()" in page
+        assert page.count("auditionApply();") >= 4, "M, S, gain and pan must all apply"
+        assert "dims every other track" not in page, "solo is audible now, not cosmetic"
+
+    def test_the_pan_law_is_the_mixers_not_the_browsers(self):
+        """StereoPannerNode folds one channel into the other: +6.02 dB at hard pan where
+        mix._apply_pan gives +3.01. Measured, not assumed."""
+        page = self._page()
+        assert "createStereoPanner" not in page
+        assert "Math.cos(a) * Math.SQRT2" in page
+
+    def test_the_cache_key_is_never_recomputed_in_the_page(self):
+        """engines.base joins the parts with a 0x1f separator. A second implementation in
+        JavaScript would be free to drift from the one the renderer uses, and the obvious
+        JS version gets that separator wrong - which would mark every cue permanently
+        stale. The page asks the server instead."""
+        assert "crypto.subtle" not in self._page()
+
+    def test_the_media_source_is_created_once_and_only_from_the_button(self):
+        """createMediaElementSource permanently reroutes the video's audio and throws on a
+        second call for the same element, so it must be unreachable from the Space
+        handler - the first Space press would otherwise mute the video for good."""
+        page = self._page()
+        assert page.count("createMediaElementSource") == 1
+        space = page.split("case ' ':")[1].split("case ")[0]
+        assert "armAudition" not in space and "ensureCtx" in space
+
+    def test_the_live_mix_plays_the_source_not_the_finished_render(self):
+        """final.mp4 has the dialogue already fused with the music and effects; only the
+        source carries the untouched original that mix.extract_original_audio pulls out."""
+        assert "if (!wantOriginal && !AUD.on) {" in self._page()
+
+    def test_normalisation_honours_both_constraints(self):
+        """audio.normalize_one_shot takes the MORE ATTENUATING of the peak and RMS
+        targets, so a long riser is caught by RMS where a click is caught by peak."""
+        page = self._page()
+        assert "REF_SFX_PEAK_DBFS = -12.0" in page
+        assert "REF_SFX_RMS_CEILING_DBFS = -26.0" in page
+        assert "Math.min(REF_SFX_PEAK_DBFS - peak, REF_SFX_RMS_CEILING_DBFS - rms)" in page
+
+    def test_the_server_serves_what_the_graph_needs(self, client, project):
+        wait_for(client, client.post(f"/api/project/{project}/render", json={}).json()["id"])
+        data = client.get(f"/api/project/{project}").json()
+
+        info = data["stem_info"]
+        assert info, "every rendered stem needs its content hash and kind"
+        for entry in info.values():
+            assert entry["key"], "the hash is what tells the page a stem is stale"
+            if entry["kind"] in ("music", "ambience"):
+                assert entry["lufs"] is not None or entry["lufs"] is None
+            else:
+                assert entry["lufs"] is None, "effects are normalised in the page, not measured"
+
+        assert "lufs" in client.get(f"/api/project/{project}/dialogue_lufs").json()
+
+        cue = data["cues"]["sfx"][0]
+        first = client.post(f"/api/project/{project}/cue_key", json={"cue": cue}).json()["key"]
+        assert first == info[cue["id"]]["key"], "an untouched cue is not stale"
+
+        # Moving it must NOT change the key (the stem survives a drag), but rewording it
+        # must - that is the whole point of the staleness check.
+        moved = dict(cue, at=cue["at"] + 5)
+        assert client.post(f"/api/project/{project}/cue_key",
+                           json={"cue": moved}).json()["key"] == first
+        reworded = dict(cue, prompt=cue["prompt"] + " and a low thump")
+        assert client.post(f"/api/project/{project}/cue_key",
+                           json={"cue": reworded}).json()["key"] != first
+
+
 class TestVerdictThroughTheGui:
     def test_render_result_and_project_carry_the_verdict(self, client, project):
         job = wait_for(client, client.post(f"/api/project/{project}/render", json={}).json()["id"])

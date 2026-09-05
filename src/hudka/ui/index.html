@@ -257,6 +257,8 @@
   .tl-btn:hover { color:var(--text); }
   .tl-btn.on { background:var(--danger); border-color:var(--danger); color:#1a0000; font-weight:700; }
   .tl-btn.solo { background:var(--accent); border-color:var(--accent); color:#191400; font-weight:700; }
+  #btnAudition.on { background:var(--accent); border-color:var(--accent); color:#191400;
+    font-weight:700; }
 
   .tl-lane { position:relative; height:var(--lane-h); border-top:1px solid #1c202b; }
   .tl-lane.sfx { height:var(--lane-h-sfx); }
@@ -545,6 +547,9 @@
         <button class="sm ghost" id="tlIn" title="Zoom in (=)">+</button>
         <button class="sm ghost" id="tlFit" title="Fit the whole video (\)">Fit</button>
         <button class="sm ghost" id="tlSel" title="Zoom to the selected cue (F)">Sel</button>
+        <button class="sm ghost" id="btnAudition" aria-pressed="false"
+                title="Live mix &mdash; hear M, S, gain and pan now instead of on the next render">Live mix</button>
+        <span class="tiny muted mono hidden" id="audNote" style="white-space:nowrap">no duck &middot; no master</span>
         <button class="sm ghost" id="tlSize" title="Track height (small / medium / large)">&#9776;</button>
         <button class="sm ghost" id="tlHide" title="Collapse the timeline">&#9660;</button>
       </div>
@@ -913,7 +918,11 @@ function paintBanner() {
 function paintPlayer() {
   const wantOriginal = $('#ab').checked;
   let src = `/media/${proj.name}/source`;
-  if (!wantOriginal) {
+  /* The live mix plays the SOURCE. Its audio track is the untouched original - exactly
+     what mix.extract_original_audio pulls out as the dialogue stem - so it can be one
+     layer in the graph. final.mp4 has the dialogue already fused with the music and the
+     effects and could never be separated back out. */
+  if (!wantOriginal && !AUD.on) {
     if (viewPreview && proj.has_preview) src = `/media/${proj.name}/preview`;
     else if (proj.stage === 'rendered') src = `/media/${proj.name}/video`;
   }
@@ -1525,6 +1534,428 @@ function applyTlSize(persist) {
 }
 $('#tlSize').onclick = function () { tlSize = (tlSize + 1) % TL_SIZES.length; applyTlSize(true); this.blur(); };
 
+/* ================================================================== LIVE MIX
+   The individual stems played against the <video>, so M, S, gain and pan are heard NOW
+   rather than on the next render. Both buttons always did exactly what they were written
+   to do; neither did anything you could hear, because the player was showing a finished
+   final.mp4 in which every sound was already fused together.
+
+   It mirrors hudka/mix.py where it can and refuses to guess where it cannot. What it
+   cannot do is listed in AUDITION_GAPS and printed in the Mix tab, in numbers, rather
+   than left rotting in this comment. */
+
+const REF_SFX_PEAK_DBFS = -12.0;          // audio.REF_SFX_PEAK_DBFS
+const REF_SFX_RMS_CEILING_DBFS = -26.0;   // audio.REF_SFX_RMS_CEILING_DBFS - the SECOND
+                                          // constraint; the more attenuating one wins
+                                          // (audio.normalize_one_shot), so a long riser
+                                          // is caught by RMS where a click is caught by
+                                          // peak.
+const NORM_CLAMP = [-24, 18];             // audio.NORMALIZE_GAIN_CLAMP_DB
+const REF_BED_LUFS = -20.0;               // mix.REF_BED_LUFS
+const NOMINAL_DIALOGUE_LUFS = -16.0;      // presets.NOMINAL_DIALOGUE_LUFS
+const BED_LOOP_CROSSFADE_S = 2.0;         // mix.BED_LOOP_CROSSFADE_S
+
+const AUD = {
+  ctx: null, mediaSrc: null, on: false, armed: false,
+  voices: new Map(),          // cue id -> { cue, kind, buf, startAt, pan, cueGain, src }
+  buses: {}, master: null,
+  anchorDb: 0, dialogueLufs: null,
+  laneMembers: new Map(),     // lane key -> Set(cue id), published by paintTimeline
+  anchorC: 0, anchorV: 0, timer: null, loadedFor: null,
+};
+let dialogueMuted = false;    // monitoring only; never written to the sheet
+
+const dbGain = db => Math.pow(10, db / 20);
+const clampDb = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+/* Two functions, not one. ensureCtx creates the context and the buses and is safe to call
+   from any gesture. armAudition additionally creates the MediaElementAudioSourceNode,
+   which PERMANENTLY reroutes the <video>'s audio through the graph and throws
+   InvalidStateError on a second call for the same element - so it is created exactly
+   once, only from the Live mix button, and never from the Space handler. If Space could
+   reach it, the first Space press with the mix off would silently mute the video for
+   good. */
+async function ensureCtx() {
+  if (!AUD.ctx) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return false;
+    AUD.ctx = new Ctor();
+    AUD.master = AUD.ctx.createGain();
+    AUD.master.connect(AUD.ctx.destination);
+    for (const bus of ['music', 'ambience', 'sfx', 'dialogue']) {
+      AUD.buses[bus] = AUD.ctx.createGain();
+      AUD.buses[bus].connect(AUD.master);
+    }
+  }
+  if (AUD.ctx.state !== 'running') { try { await AUD.ctx.resume(); } catch {} }
+  return AUD.ctx.state === 'running';
+}
+
+async function armAudition() {
+  if (!(await ensureCtx())) return false;
+  if (!AUD.armed) {
+    AUD.mediaSrc = AUD.ctx.createMediaElementSource($('#player'));
+    AUD.armed = true;
+  }
+  AUD.mediaSrc.disconnect();
+  AUD.mediaSrc.connect(AUD.buses.dialogue);
+  AUD.buses.dialogue.gain.value = 1;
+  return true;
+}
+
+function disarmAudition() {
+  if (!AUD.armed) return;
+  AUD.mediaSrc.disconnect();
+  AUD.mediaSrc.connect(AUD.ctx.destination);   // the element cannot be un-rerouted
+  AUD.buses.dialogue.gain.value = 1;           // explicit: a 0 left here is a dead video
+}
+
+/* mix._apply_pan. NOT StereoPannerNode: measured, that node gives +6.02 dB at hard pan
+   where the mixer gives +3.01, because it folds one channel into the other instead of
+   attenuating it. Only effects get one - BedCue has no pan field, place_beds never pans,
+   and cos(NaN) fed to setTargetAtTime throws. */
+function makePan(ctx, dest) {
+  const split = ctx.createChannelSplitter(2);
+  const gl = ctx.createGain(), gr = ctx.createGain();
+  const merge = ctx.createChannelMerger(2);
+  split.connect(gl, 0); gl.connect(merge, 0, 0);
+  split.connect(gr, 1); gr.connect(merge, 0, 1);
+  merge.connect(dest);
+  return {
+    input: split,
+    set(pan, when) {
+      const p = Number.isFinite(pan) ? Math.max(-1, Math.min(1, pan)) : 0;
+      const a = (p + 1) * Math.PI / 4;
+      gl.gain.setTargetAtTime(Math.cos(a) * Math.SQRT2, when, 0.01);
+      gr.gain.setTargetAtTime(Math.sin(a) * Math.SQRT2, when, 0.01);
+    },
+  };
+}
+
+/* ------------------------------------------------- reproducing the mixer's own chain */
+
+const peakDbfs = ch => {
+  let m = 0;
+  for (const a of ch) for (let i = 0; i < a.length; i++) { const v = Math.abs(a[i]); if (v > m) m = v; }
+  return 20 * Math.log10(Math.max(m, 1e-12));
+};
+// audio.rms_dbfs measures the MONO DOWNMIX, not the channels separately.
+const rmsDbfs = ([l, r]) => {
+  let s = 0;
+  for (let i = 0; i < l.length; i++) { const m = (l[i] + r[i]) / 2; s += m * m; }
+  return 20 * Math.log10(Math.max(Math.sqrt(s / (l.length || 1)), 1e-12));
+};
+
+function normalizeOneShotDb(peak, rms) {
+  if (peak <= -119.0) return 0;            // silence; nothing to normalise toward
+  return clampDb(Math.min(REF_SFX_PEAK_DBFS - peak, REF_SFX_RMS_CEILING_DBFS - rms),
+                 NORM_CLAMP[0], NORM_CLAMP[1]);
+}
+
+// audio.find_onset: 1ms envelope, first frame at 15% of peak, ignored past 0.5s.
+function findOnset([l, r], sr) {
+  const hop = Math.max(1, Math.round(sr / 1000));
+  const frames = Math.floor(l.length / hop);
+  if (!frames) return 0;
+  const env = new Float32Array(frames);
+  let peak = 0;
+  for (let f = 0; f < frames; f++) {
+    let m = 0;
+    for (let i = f * hop; i < (f + 1) * hop; i++) {
+      const v = Math.abs((l[i] + r[i]) / 2);
+      if (v > m) m = v;
+    }
+    env[f] = m;
+    if (m > peak) peak = m;
+  }
+  if (peak <= 1e-6) return 0;
+  for (let f = 0; f < frames; f++) {
+    if (env[f] >= peak * 0.15) {
+      const onset = (f * hop) / sr;
+      // A late "onset" means a swell or a bed, not a hit; do not shift those.
+      return onset < 0.5 ? onset : 0;
+    }
+  }
+  return 0;
+}
+
+// audio.fit_length / audio.loop_to_length, with the same equal-power seam.
+function fitOrLoop([l, r], sr, duration, loop) {
+  const want = Math.max(1, Math.round(duration * sr));
+  if (l.length >= want) return [l.subarray(0, want), r.subarray(0, want)];
+  if (!loop) {
+    const ol = new Float32Array(want), or_ = new Float32Array(want);
+    ol.set(l); or_.set(r);
+    return [ol, or_];
+  }
+  const xf = Math.min(Math.round(BED_LOOP_CROSSFADE_S * sr), Math.floor(l.length / 2));
+  const out = [Float32Array.from(l), Float32Array.from(r)];
+  const src = [l, r];
+  while (out[0].length < want) {
+    const n = out[0].length;
+    const grown = n - xf + src[0].length;
+    const next = [new Float32Array(grown), new Float32Array(grown)];
+    for (let c = 0; c < 2; c++) {
+      next[c].set(out[c].subarray(0, n - xf));
+      for (let i = 0; i < xf; i++) {
+        const t = xf === 1 ? 1 : i / (xf - 1);
+        next[c][n - xf + i] = out[c][n - xf + i] * Math.cos(t * Math.PI / 2)
+                            + src[c][i] * Math.sin(t * Math.PI / 2);
+      }
+      next[c].set(src[c].subarray(xf), n);
+    }
+    out[0] = next[0]; out[1] = next[1];
+  }
+  return [out[0].subarray(0, want), out[1].subarray(0, want)];
+}
+
+// mix._apply_fades: linear, in place.
+function applyFades(ch, sr, fadeIn, fadeOut) {
+  const n = ch[0].length;
+  const nIn = Math.min(Math.trunc(fadeIn * sr), n);
+  const nOut = Math.min(Math.trunc(fadeOut * sr), n - nIn);
+  for (const a of ch) {
+    for (let i = 0; i < nIn; i++) a[i] *= nIn === 1 ? 0 : i / (nIn - 1);
+    for (let i = 0; i < nOut; i++) a[n - nOut + i] *= nOut === 1 ? 0 : 1 - i / (nOut - 1);
+  }
+}
+
+/* Everything static is baked into the buffer; only pan and gain stay live, which is
+   exactly the split mix.py already makes between placement and shaping. Returns the
+   buffer and the video time the clip should start at - for a one-shot that is
+   `at - onset`, because the renderer lands the transient on the cue time rather than the
+   file merely starting there. */
+function bakeStem(ctx, raw, cue, kind, info) {
+  const sr = raw.sampleRate;
+  const n = raw.length;
+  const src0 = raw.getChannelData(0);
+  const src1 = raw.numberOfChannels > 1 ? raw.getChannelData(1) : src0;
+  let l = Float32Array.from(src0), r = Float32Array.from(src1);
+
+  // clip - clip.mean(axis=0): a DC offset is a thump at every fade edge.
+  let sl = 0, sr_ = 0;
+  for (let i = 0; i < n; i++) { sl += l[i]; sr_ += r[i]; }
+  const ml = sl / (n || 1), mr = sr_ / (n || 1);
+  for (let i = 0; i < n; i++) { l[i] -= ml; r[i] -= mr; }
+
+  const normalize = sheetVersion() >= 2;
+  let startAt, gainDb = 0;
+
+  if (kind === 'sfx') {
+    if (normalize) {
+      const g = dbGain(normalizeOneShotDb(peakDbfs([l, r]), rmsDbfs([l, r])));
+      for (let i = 0; i < n; i++) { l[i] *= g; r[i] *= g; }
+    }
+    // The renderer measures the onset AFTER normalising and BEFORE fading.
+    const onset = cue.align_transient === false ? 0 : findOnset([l, r], sr);
+    startAt = cue.at - onset;
+    applyFades([l, r], sr, cue.fade_in || 0,
+               Math.max(cue.fade_out || 0, Math.min(0.02, (cue.duration || 1) / 4)));
+  } else {
+    // Loudness is measured on the RAW file, before looping or fading - measuring after
+    // fades reads low. The server did that for us; a null must never reach a gain.
+    if (normalize && info && info.lufs != null) {
+      gainDb = clampDb(REF_BED_LUFS - info.lufs, NORM_CLAMP[0], NORM_CLAMP[1]);
+    }
+    [l, r] = fitOrLoop([l, r], sr, cue.end - cue.start, !!cue.loop);
+    applyFades([l, r], sr, cue.fade_in || 0, cue.fade_out || 0);
+    const g = dbGain(gainDb);
+    if (g !== 1) for (let i = 0; i < l.length; i++) { l[i] *= g; r[i] *= g; }
+    startAt = cue.start;
+  }
+
+  const buf = ctx.createBuffer(2, l.length, sr);
+  buf.copyToChannel(l, 0); buf.copyToChannel(r, 1);
+  return { buf, startAt, normDb: gainDb };
+}
+
+/* ------------------------------------------------------------------- load and play */
+
+async function loadVoices() {
+  if (!AUD.ctx || !proj || !proj.cues) return;
+  stopVoices();
+  AUD.voices.clear();
+  const info = proj.stem_info || {};
+  const have = new Set(proj.stems || []);
+  const jobs = [];
+  for (const kind of ['music', 'ambience', 'sfx']) {
+    for (const cue of proj.cues[kind] || []) {
+      if (!have.has(cue.id)) continue;      // never substitute: a missing stem is silent
+      jobs.push({ cue, kind });
+    }
+  }
+  if (!jobs.length) { say('nothing rendered yet - render once, then the live mix has stems to play'); return; }
+
+  say(`live mix: loading ${jobs.length} stem${jobs.length === 1 ? '' : 's'}`);
+  let failed = 0;
+  await Promise.all(jobs.map(async ({ cue, kind }) => {
+    try {
+      const res = await fetch(`/media/${proj.name}/stem/${cue.id}`);
+      if (!res.ok) throw new Error(res.status);
+      const raw = await AUD.ctx.decodeAudioData(await res.arrayBuffer());
+      const { buf, startAt } = bakeStem(AUD.ctx, raw, cue, kind, info[cue.id]);
+      const bus = AUD.buses[kind === 'sfx' ? 'sfx' : kind];
+      const cueGain = AUD.ctx.createGain();
+      cueGain.connect(bus);
+      const pan = kind === 'sfx' ? makePan(AUD.ctx, cueGain) : null;
+      AUD.voices.set(cue.id, { cue, kind, buf, startAt, pan, cueGain, src: null });
+    } catch (err) { failed++; console.warn('stem', cue.id, err); }
+  }));
+
+  // The anchor every generated bus is placed against (render.render).
+  try {
+    const d = await api(`/api/project/${proj.name}/dialogue_lufs`);
+    AUD.dialogueLufs = d.lufs;
+    const keyRef = d.lufs == null ? null : d.lufs + ((proj.cues && proj.cues.original_gain_db) || 0);
+    AUD.anchorDb = keyRef == null || !(proj.cues && proj.cues.keep_original_audio)
+      ? 0 : clampDb(keyRef - NOMINAL_DIALOGUE_LUFS, -6, 6);
+  } catch { AUD.anchorDb = 0; }
+
+  say(failed ? `live mix: ${AUD.voices.size} stems ready, ${failed} could not be read`
+             : `live mix: ${AUD.voices.size} stem${AUD.voices.size === 1 ? '' : 's'} ready`);
+  paintAudNote();
+  if (!$('#player').paused) scheduleVoices();
+}
+
+function stopVoices() {
+  for (const v of AUD.voices.values()) {
+    if (v.src) { try { v.src.stop(); } catch {} try { v.src.disconnect(); } catch {} v.src = null; }
+  }
+}
+
+/* Anchor a pair of clocks - the media clock the <video> exposes and the audio device
+   clock - and schedule every cue against that pair. The video's own audio runs through
+   this same graph while the mix is on, so both sides share the destination's latency and
+   no separate latency term is needed to keep the sounds together. */
+function scheduleVoices() {
+  if (!AUD.on || !AUD.ctx) return;
+  stopVoices();
+  const p = $('#player');
+  AUD.anchorC = AUD.ctx.currentTime + 0.06;    // a beat of headroom to schedule into
+  AUD.anchorV = p.currentTime;
+  for (const v of AUD.voices.values()) {
+    const end = v.startAt + v.buf.duration;
+    if (end <= AUD.anchorV) continue;          // already finished
+    const src = AUD.ctx.createBufferSource();
+    src.buffer = v.buf;
+    src.connect(v.pan ? v.pan.input : v.cueGain);
+    // start() throws RangeError on a negative time, and find_onset can pull a cue up to
+    // 0.5s earlier - so anything near zero produces one. mix._add_at clips the head; do
+    // the same with an offset into the buffer. Each start is guarded on its own: one
+    // throw would otherwise kill every remaining cue with no visible cause.
+    const when = AUD.anchorC + (v.startAt - AUD.anchorV);
+    try {
+      if (when >= AUD.anchorC) src.start(when);
+      else src.start(AUD.anchorC, AUD.anchorV - v.startAt);
+      v.src = src;
+    } catch (err) { console.warn('cue skipped', v.cue.id, err); }
+  }
+  auditionApply();
+}
+
+/* M, S, gain, pan and the bus trims are all AudioParams: audible in about ten
+   milliseconds with no click. Everything else - the tone filters, the fades, the loop
+   seam - is baked into the buffer and needs a reload. That split mirrors the schema's own
+   generation/shaping split one level further down. */
+function auditionApply() {
+  if (!AUD.on || !AUD.ctx) return;
+  const now = AUD.ctx.currentTime;
+  const soloed = soloKey ? (AUD.laneMembers.get(soloKey) || new Set()) : null;
+  for (const [id, voice] of AUD.voices) {
+    const cue = voice.cue;
+    const off = cue.muted || (soloed && !soloed.has(id));
+    voice.cueGain.gain.setTargetAtTime(off ? 0 : dbGain(cue.gain_db || 0), now, 0.01);
+    if (voice.pan) voice.pan.set(cue.pan, now);
+  }
+  const c = proj.cues || {};
+  const set = (bus, db) => AUD.buses[bus].gain
+    .setTargetAtTime(dbGain(AUD.anchorDb + (db || 0)), now, 0.01);
+  set('music', c.music_bus_db); set('ambience', c.ambience_bus_db); set('sfx', c.sfx_bus_db);
+  // The dialogue lane's M is MONITORING ONLY. keep_original_audio gates the whole anchor
+  // block in render.render, so binding it here would re-level every generated bus by up
+  // to 6 dB behind a button that looks like a mute. It stays on the Mix tab.
+  const off = dialogueMuted || (soloKey && soloKey !== 'speech');
+  AUD.buses.dialogue.gain.setTargetAtTime(off ? 0 : 1, now, 0.01);
+}
+
+/* Two clocks drift. Under 40ms is inaudible against picture; past that, re-anchor. A
+   reschedule is a hard restart of every sounding cue, so the threshold is deliberately
+   well above anything a correct anchor produces in normal playback. */
+function checkDrift() {
+  const p = $('#player');
+  if (!AUD.on || !AUD.ctx || p.paused || p.seeking) return;
+  const expected = AUD.anchorV + (AUD.ctx.currentTime - AUD.anchorC);
+  if (Math.abs(p.currentTime - expected) > 0.04) scheduleVoices();
+}
+
+function paintAudNote() {
+  const note = $('#audNote');
+  if (!note) return;
+  note.classList.toggle('hidden', !AUD.on);
+  note.title = AUDITION_GAPS();
+}
+
+/* Said in numbers, not hedged in prose. A previous incident in this project was a
+   placeholder passing for a finished product, so what the live mix does NOT do is
+   printed with the actual values it would have used. */
+function AUDITION_GAPS() {
+  const c = proj.cues || {};
+  const pre = (lib.presets || {})[c.preset] || {};   // lib.presets is keyed by name
+  const duck = c.duck_depth_db != null ? c.duck_depth_db : pre.duck_depth_db;
+  const lufs = c.target_lufs != null ? c.target_lufs : pre.target_lufs;
+  return 'The live mix matches the render for level, pan and balance. It does NOT apply: '
+    + `music ducking under speech (${duck != null ? duck : '?'} dB in the render), `
+    + `the final loudness pass (${lufs != null ? lufs : '?'} LUFS) and its true-peak `
+    + 'ceiling. Render to hear those.';
+}
+
+/* schema.normalizes_stems is `version >= 2`, and render.py passes it as `normalize=`. A
+   version-1 sheet renders with ABSOLUTE gains. The fallback path in api_project can serve
+   a sheet that carries no `version` at all, and `undefined >= 2` is false - the right
+   answer by luck, so it is made the right answer by construction. */
+const sheetVersion = () => (proj.cues && proj.cues.version) || 1;
+
+$('#btnAudition').onclick = async function () {
+  // The live mix and a preview cannot both be true: the live mix plays the REAL stem
+  // tree, so auditioning under the preview banner would put "placeholder tones, not real
+  // audio" over audio that is neither.
+  if (!AUD.on && viewPreview) {
+    say('untick watch preview first - the live mix plays your real stems', 'danger');
+    this.blur(); return;
+  }
+  if (!AUD.on) {
+    if (!(await armAudition())) {
+      say('your browser is holding audio back - click the page and try again', 'danger');
+      this.blur(); return;
+    }
+    AUD.on = true;
+  } else {
+    AUD.on = false;
+    disarmAudition();
+    stopVoices();
+    say('');
+  }
+  this.classList.toggle('on', AUD.on);
+  this.setAttribute('aria-pressed', String(AUD.on));
+  paintAudNote();
+  swapPlayerSource(() => {});          // /video <-> /source, keeping the playhead
+  if (AUD.on) { await loadVoices(); auditionApply(); }
+  this.blur();
+};
+
+/* The scheduler is anchored on transport events rather than polled: a seek invalidates
+   every scheduled start at once, and starting sources while the element is still seeking
+   would anchor against a time it is about to leave. */
+$('#player').addEventListener('play', () => { if (AUD.on) scheduleVoices(); });
+$('#player').addEventListener('pause', stopVoices);
+$('#player').addEventListener('seeking', stopVoices);
+$('#player').addEventListener('seeked', () => {
+  // Paused is silent, as in every NLE - scrubbing must not fire off every cue it crosses.
+  if (AUD.on && !$('#player').paused) scheduleVoices();
+});
+$('#player').addEventListener('ratechange', () => { if (AUD.on && !$('#player').paused) scheduleVoices(); });
+setInterval(checkDrift, 2000);
+
 /* ------------------------------------------------------------ track headers */
 
 let soloKey = null;                       // view state only; never written to the sheet
@@ -1534,8 +1965,14 @@ const laneKey = cues => (cues && cues.length ? `lane:${cues[0].id}` : '');
    the mixer already honours, so it changes the render. It is offered only on bed lanes,
    which are 1:1 with a cue; fx lanes are a packLanes group whose membership is
    recomputed on every drag, so a lane-level mute there would target a moving set (the
-   fx mute lives on the cue card instead). Solo is a view state: a true solo would need a
-   live mixer we do not have, so it dims the other tracks and says so. */
+   fx mute lives on the cue card instead).
+
+   Solo is monitoring only and is never written to the sheet. Both are now AUDIBLE when
+   the live mix is on: the audition graph holds one gain node per cue, so M and S move a
+   gain in about ten milliseconds instead of waiting for the next render. That distinction
+   was the whole defect - both buttons did exactly what they were written to do, and
+   neither did anything the user could hear, because the player was showing a finished
+   final.mp4 with every sound already fused together. */
 function laneHeader(label, cls, key, colour, cues, mutable) {
   const tag = document.createElement('div');
   tag.className = `tl-name ${cls}`
@@ -1557,11 +1994,12 @@ function laneHeader(label, cls, key, colour, cues, mutable) {
       m.className = 'tl-btn' + (allMuted ? ' on' : '');
       m.textContent = 'M';
       m.tabIndex = -1;                    // two stops per lane would swamp the tab order
-      m.title = allMuted ? 'Unmute this track'
-                         : 'Mute \u2014 this track is left out of the render';
+      m.title = allMuted ? 'Unmute this track \u2014 saved with the cue sheet'
+                         : 'Mute \u2014 silent now, and left out of the render. A saved edit.';
       m.onclick = ev => {
         ev.stopPropagation();
         cues.forEach(c => { c.muted = !allMuted; });
+        auditionApply();                 // audible immediately, before any repaint
         markDirty(); paintCues(); paintTimeline();
       };
       tag.append(m);
@@ -1570,10 +2008,40 @@ function laneHeader(label, cls, key, colour, cues, mutable) {
     s.className = 'tl-btn' + (soloKey === key ? ' solo' : '');
     s.textContent = 'S';
     s.tabIndex = -1;
-    s.title = 'Solo \u2014 dims every other track while you work. A view setting, not saved.';
-    s.onclick = ev => { ev.stopPropagation(); soloKey = soloKey === key ? null : key; paintTimeline(); };
+    s.title = 'Solo \u2014 hear only this track. Monitoring only; never saved.';
+    s.onclick = ev => {
+      ev.stopPropagation();
+      soloKey = soloKey === key ? null : key;
+      auditionApply(); paintTimeline();
+    };
     tag.append(s);
     tag.onclick = () => selectCue(cues[0].id);
+  }
+
+  /* The dialogue lane has no cues, so the loop above skips it - but it is a track you
+     listen to, and the live mix carries it as a bus. Its M is MONITORING ONLY: the sheet
+     field that really drops the source audio is keep_original_audio, and that gates the
+     whole bus-anchor block in render.render, so binding it here would silently re-level
+     every generated bus by up to 6 dB behind a button that looks like a mute. */
+  if (key === 'speech') {
+    const m = document.createElement('button');
+    m.className = 'tl-btn' + (dialogueMuted ? ' on' : '');
+    m.textContent = 'M';
+    m.tabIndex = -1;
+    m.title = 'Mute the original audio while you listen. Monitoring only \u2014 to leave it '
+            + 'out of the render, set "keep original audio" on the Mix tab.';
+    m.onclick = ev => { ev.stopPropagation(); dialogueMuted = !dialogueMuted; auditionApply(); paintTimeline(); };
+    const s = document.createElement('button');
+    s.className = 'tl-btn' + (soloKey === 'speech' ? ' solo' : '');
+    s.textContent = 'S';
+    s.tabIndex = -1;
+    s.title = 'Solo \u2014 hear only the original audio.';
+    s.onclick = ev => {
+      ev.stopPropagation();
+      soloKey = soloKey === 'speech' ? null : 'speech';
+      auditionApply(); paintTimeline();
+    };
+    tag.append(m, s);
   }
   return tag;
 }
@@ -1603,8 +2071,13 @@ function paintTimeline() {
 
   const names = $('#tlNames');
   names.innerHTML = '';
+  AUD.laneMembers.clear();
 
   const addLane = (label, cls = '', key = '', colour = 'var(--speech)', cues = null, mutable = false) => {
+    // What solo has to resolve to. laneKey names ONE cue, but an fx lane is a packLanes
+    // group recomputed on every drag, so the membership is published here where it is
+    // already known rather than recomputed anywhere else.
+    if (key && cues) AUD.laneMembers.set(key, new Set(cues.map(c => c.id)));
     names.append(laneHeader(label, cls, key, colour, cues, mutable));
 
     const lane = document.createElement('div');
@@ -1930,7 +2403,13 @@ document.addEventListener('keydown', e => {
     case '-': case '_': e.preventDefault(); zoomTimeline(1 / 1.6); break;
     case '\\':         e.preventDefault(); fitTimeline(); break;
     case 'f':           e.preventDefault(); zoomToSelection(); break;
-    case ' ':           e.preventDefault(); p.paused ? p.play() : p.pause(); break;
+    // ensureCtx() must run inside this handler - a keydown is a user gesture, and the
+    // autoplay policy will not start an AudioContext outside one. It deliberately does
+    // NOT arm the media source: that reroute is irreversible and belongs to Live mix.
+    case ' ':           e.preventDefault();
+                        if (p.paused) (AUD.on ? ensureCtx() : Promise.resolve()).then(() => p.play());
+                        else p.pause();
+                        break;
     case 'ArrowLeft':   e.preventDefault(); p.currentTime = Math.max(0, p.currentTime - (e.shiftKey ? 1 : f)); break;
     case 'ArrowRight':  e.preventDefault(); p.currentTime = Math.min(videoDuration(), p.currentTime + (e.shiftKey ? 1 : f)); break;
     case 'Home':        e.preventDefault(); p.currentTime = 0; break;
@@ -2114,10 +2593,11 @@ function cueCard(cue, kind) {
         v => { cue.at = parseFloat(v) || 0; paintTimeline(); }),
       field('length', cue.duration, { type: 'number', step: 0.1, min: 0.1 },
         v => { cue.duration = parseFloat(v) || 1; }),
+      // These fire on `input`, so the level and position move while you drag.
       field('gain dB', cue.gain_db, { type: 'number', step: 0.5 },
-        v => { cue.gain_db = parseFloat(v) || 0; }),
+        v => { cue.gain_db = parseFloat(v) || 0; auditionApply(); }),
       field('pan', cue.pan, { type: 'number', step: 0.1, min: -1, max: 1 },
-        v => { cue.pan = parseFloat(v) || 0; }),
+        v => { cue.pan = parseFloat(v) || 0; auditionApply(); }),
     );
   } else {
     fields.append(

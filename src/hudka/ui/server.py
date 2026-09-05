@@ -22,8 +22,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ValidationError
 
 from .. import analyze as analyze_mod
-from .. import design, engines, presets, render as render_mod
-from ..engines.base import LicenceError
+from .. import design, engines, mix as mix_mod, presets, render as render_mod
+from ..engines.base import GenerateRequest, LicenceError
 from ..schema import CueSheet, VideoInfo
 from .jobs import JobRunner
 
@@ -173,6 +173,118 @@ def create_app(workspace: Path) -> FastAPI:
                 continue
         return out
 
+    def stem_manifest(project: Path) -> dict[str, dict]:
+        """Everything the browser needs to place a stem at the render's own level.
+
+        `key` is the content hash baked into the filename by GenerateRequest.cache_key.
+        The page asks /cue_key what the CURRENT cue would hash to and compares; a mismatch
+        means the file on disk was made from a different prompt or seed, and playing it
+        would tell the user their edit did nothing.
+
+        `lufs` is measured for beds only. mix.place_beds normalises against REF_BED_LUFS
+        on the RAW file, while one-shots go through normalize_one_shot, which the page
+        reproduces exactly from the decoded buffer. Measuring every effect stem cost
+        seconds of dead time for a number nothing reads.
+
+        A render unlinks stems while this walks them, so anything that vanishes underneath
+        is skipped - /api/project has to stay openable while a render runs.
+        """
+        cache_path = project / "loudness.json"
+        cache = read_json(cache_path)
+        changed = False
+        out: dict[str, dict] = {}
+        for cue_id, wav in stem_index(project).items():
+            try:
+                stat = wav.stat()
+            except OSError:
+                continue
+            key = f"{wav.name}:{int(stat.st_mtime)}:{stat.st_size}"
+            lufs = None
+            if wav.parent.name in ("music", "ambience"):
+                if key not in cache:
+                    try:
+                        cache[key] = mix_mod.measured_lufs(wav)
+                    except Exception:
+                        cache[key] = None
+                    changed = True
+                lufs = cache[key]
+            parts = wav.stem.rsplit("_", 1)
+            out[cue_id] = {
+                "key": parts[1] if len(parts) == 2 else "",
+                "kind": wav.parent.name,
+                "lufs": lufs,
+            }
+        if changed:
+            try:
+                cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return out
+
+    @app.get("/api/project/{name}/dialogue_lufs")
+    def api_dialogue_lufs(name: str) -> JSONResponse:
+        """Integrated loudness of the source audio, cached.
+
+        This is `key_ref_lufs` in render.render and it sets anchor_db, the offset every
+        generated bus is placed against. Without it the live mix puts the beds up to 6 dB
+        away from where the render will. Its own endpoint because /api/project is fetched
+        on every refresh() and this costs seconds on a 4K source.
+        """
+        project = project_dir(name)
+        original = project / "buses" / "original.wav"
+        try:
+            target = original if original.exists() else _resolve_source(project)
+            stat = target.stat()
+        except Exception:
+            return JSONResponse({"lufs": None, "from": None})
+        cache_path = project / "loudness.json"
+        cache = read_json(cache_path)
+        key = f"dialogue:{target.name}:{int(stat.st_mtime)}:{stat.st_size}"
+        if key not in cache:
+            try:
+                cache[key] = mix_mod.measured_lufs(target)
+            except Exception:
+                cache[key] = None
+            try:
+                cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return JSONResponse({"lufs": cache[key], "from": target.name})
+
+    @app.post("/api/project/{name}/cue_key")
+    def api_cue_key(name: str, payload: dict) -> JSONResponse:
+        """The content hash the renderer would give this cue, right now.
+
+        ONE implementation. Reproducing GenerateRequest.cache_key in JavaScript would be a
+        second one free to drift - and the obvious JS version gets the separator wrong
+        (the renderer joins with \x1f), which would paint every cue permanently stale.
+        Takes the cue from the request body, so it tracks UNSAVED edits.
+        """
+        cue = payload.get("cue") or {}
+        engine_id = cue.get("engine") or "silence"
+        is_bed = "start" in cue
+        try:
+            duration = ((float(cue["end"]) - float(cue["start"])) if is_bed
+                        else float(cue.get("duration", 0)))
+            start = float(cue["start"]) if is_bed else float(cue.get("at", 0))
+        except (TypeError, ValueError, KeyError):
+            raise HTTPException(status_code=422, detail="cue is missing its times")
+        extra = {}
+        for field_name in ("steps", "cfg_scale", "negative_prompt"):
+            if cue.get(field_name) not in (None, ""):
+                extra[field_name] = cue[field_name]
+        video = None
+        if engine_id == "hunyuan-foley":
+            try:
+                video = _resolve_source(project_dir(name))
+            except HTTPException:
+                video = None
+        req = GenerateRequest(
+            prompt=cue.get("prompt", ""), duration=duration, seed=int(cue.get("seed", 0)),
+            video=video, window=(start, start + duration), extra=extra,
+        )
+        return JSONResponse({"key": req.cache_key(engine_id)})
+
     # ------------------------------------------------------------------ page
 
     @app.get("/", response_class=HTMLResponse)
@@ -189,8 +301,11 @@ def create_app(workspace: Path) -> FastAPI:
             "workspace": str(workspace),
             "projects": [summarise(p) for p in projects],
             "presets": {
+                # duck_depth_db so the live mix can state, in numbers, the one thing
+                # it cannot reproduce.
                 name: {"description": pre.description, "guidance": pre.guidance,
-                       "target_lufs": pre.target_lufs}
+                       "target_lufs": pre.target_lufs,
+                       "duck_depth_db": pre.duck_depth_db}
                 for name, pre in presets.PRESETS.items()
             },
             "engines": {
@@ -481,6 +596,9 @@ def create_app(workspace: Path) -> FastAPI:
             # here would silently disable every stem button instead of failing loudly.
             "stems": sorted(stem_index(project)),
             "preview_stems": sorted(stem_index(project, preview=True)),
+            # Per-stem content hash, kind and (for beds) measured loudness, so the live
+            # mix can place each stem at the level the render would.
+            "stem_info": stem_manifest(project),
             "report": read_json(project / "render_report.json") or None,
             # A preview writes its report and its ledger inside preview/, so these are
             # different files. Without them the Output tab describes the last real render
