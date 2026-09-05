@@ -2697,6 +2697,20 @@ function cueCard(cue, kind) {
   const reroll = mk('re-roll', 'new seed: regenerates only this cue on the next render', () => {
     cue.seed = Math.floor(Math.random() * 100000); markDirty();
   });
+  // Re-roll keeps the style and changes the take; this changes the style. The choice of
+  // underscore is deterministic per project, which sounded like "the same music every
+  // time" to someone re-creating the cue sheet in the hope of a change.
+  const newMusic = kind === 'music'
+    ? mk('new music', 'a different underscore: new style and seed, same placement and level',
+         async () => {
+           if (dirty && !confirm('Save your other changes first? Unsaved edits will be lost.')) return;
+           try {
+             const r = await api(`/api/project/${proj.name}/cue/${cue.id}/new_music`, { method: 'POST' });
+             say(`new music: ${r.mood} - render to hear it`, 'muted');
+             await refresh();
+           } catch (err) { showError('Cannot pick new music', err.message); }
+         })
+    : null;
   const mute = mk(cue.muted ? 'muted' : 'mute',
     'leave this cue out of the render', () => {
       cue.muted = !cue.muted; markDirty(); paintCues(); paintTimeline();
@@ -2710,7 +2724,7 @@ function cueCard(cue, kind) {
   const sum = document.createElement('span');
   sum.className = 'cue-sum tiny muted';
   sum.textContent = `${Number(at).toFixed(2)}s \u00b7 ${cue.prompt}`;
-  top.append(id, seek, play, reroll, mute, sum, spacer, del);
+  top.append(id, seek, play, ...(newMusic ? [newMusic] : []), reroll, mute, sum, spacer, del);
 
   const prompt = document.createElement('textarea');
   prompt.value = cue.prompt;

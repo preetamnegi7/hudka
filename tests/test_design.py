@@ -271,6 +271,35 @@ class TestMusicVariety:
             if bed.narration:
                 assert "no lead melody" in bed.prompt and "steady dynamics" in bed.prompt
 
+    def test_recreating_the_sheet_gives_different_music(self):
+        """What the user heard: delete the project, import the same file, create the cue
+        sheet - same bed, same seed, every time. The first sheet stays reproducible; a
+        sheet made over an existing one must move on."""
+        a = analysis(path="a.mp4", speech=[(0, 40)])
+        first = design.scaffold(a).music[0]
+        again = design.scaffold(a).music[0]
+        assert (again.prompt, again.seed) == (first.prompt, first.seed), "the first choice is stable"
+
+        second = design.scaffold(a, previous=design.scaffold(a)).music[0]
+        assert second.prompt != first.prompt and second.seed != first.seed
+        third = design.scaffold(a, previous=design.scaffold(a, previous=design.scaffold(a))).music[0]
+        assert third.prompt != second.prompt
+
+    def test_new_music_never_hands_back_the_bed_it_was_asked_to_avoid(self):
+        from hudka.schema import VideoInfo
+
+        a = analysis(speech=[(0, 40)])
+        info = VideoInfo.model_validate(a["video"])
+        cov = design.speech_coverage(a, 48.0)
+        seen = set()
+        prompt, seed = None, 0
+        for _ in range(6):
+            template, seed = design.pick_bed(info, a, cov, avoid_prompt=prompt, salt=seed + 1)
+            assert template.prompt != prompt
+            seen.add(template.prompt)
+            prompt = template.prompt
+        assert len(seen) >= 3, "every mood now has at least three underscores to cycle through"
+
     def test_the_library_covers_every_combination_it_is_asked_for(self):
         pairs = {(b.narration, b.pace) for b in design.MUSIC_BEDS}
         for narration in (True, False):
@@ -278,7 +307,7 @@ class TestMusicVariety:
                 assert (narration, pace) in pairs, f"nothing for {narration}/{pace}"
                 pool = [b for b in design.MUSIC_BEDS
                         if b.narration is narration and b.pace == pace]
-                assert len(pool) > 1, "one candidate is how this became one bed for everyone"
+                assert len(pool) >= 3, "one candidate is how this became one bed for everyone"
 
 
 class TestBedEngineFollowsTheMachine:

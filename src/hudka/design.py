@@ -83,6 +83,20 @@ MUSIC_BEDS: tuple[BedTemplate, ...] = (
         "energetic instrumental underscore at 112 BPM in E minor, plucked synth pulse on "
         "a two-bar loop, warm pad, light kick and shaker, steady bass, wide stereo image, "
         "airy top end, no vocals, no lead melody, steady dynamics, sits under a voiceover"),
+    BedTemplate("nylon guitar", True, "slow",
+        "gentle instrumental underscore at 66 BPM in G major, fingerpicked nylon guitar on a "
+        "slow two-chord loop, soft string pad far behind it, light brushed percussion, warm "
+        "round bass, wide stereo image, airy top end, no vocals, no lead melody, steady "
+        "dynamics, sits under a voiceover"),
+    BedTemplate("soft synth pulse", True, "medium",
+        "light instrumental underscore at 96 BPM in D major, soft plucked synth pulse, "
+        "airy pad, quiet shaker and finger snaps, gentle sub bass, wide stereo image, airy "
+        "top end, no vocals, no lead melody, steady dynamics, sits under a voiceover"),
+    BedTemplate("bright keys", True, "fast",
+        "upbeat instrumental underscore at 108 BPM in C major, bright electric piano "
+        "chords on an eight-bar loop, tight pad, light kick and hi-hat, walking bass, wide "
+        "stereo image, airy top end, no vocals, no lead melody, steady dynamics, sits under "
+        "a voiceover"),
     BedTemplate("slow strings", False, "slow",
         "cinematic instrumental bed at 64 BPM in C minor, sustained strings, low drone, "
         "sparse piano notes, soft timpani pulse, wide stereo image, airy top end, "
@@ -107,6 +121,18 @@ MUSIC_BEDS: tuple[BedTemplate, ...] = (
         "energetic instrumental bed at 126 BPM in F minor, arpeggiated synth, filtered pad "
         "sweep, four-on-the-floor kick and hats, rolling bass, wide stereo image, airy top "
         "end, no vocals"),
+    BedTemplate("ambient piano", False, "slow",
+        "spacious instrumental bed at 60 BPM in E major, sparse piano chords with long "
+        "reverb, slow evolving pad, distant soft bass swells, wide stereo image, airy top "
+        "end, no vocals, gentle dynamics"),
+    BedTemplate("indie groove", False, "medium",
+        "warm instrumental bed at 100 BPM in D major, clean strummed electric guitar, soft "
+        "organ pad, relaxed drum groove with brushes, round bass, wide stereo image, airy "
+        "top end, no vocals, steady dynamics"),
+    BedTemplate("synth pop", False, "fast",
+        "bright instrumental bed at 122 BPM in A major, punchy synth chords, sparkling "
+        "arpeggio, crisp kick and clap, bouncing bass, wide stereo image, airy top end, "
+        "no vocals, steady dynamics"),
 )
 
 
@@ -136,7 +162,8 @@ def bed_pace(analysis: dict, duration: float) -> str:
     return "medium"
 
 
-def pick_bed(info: VideoInfo, analysis: dict, coverage: float) -> tuple[BedTemplate, int]:
+def pick_bed(info: VideoInfo, analysis: dict, coverage: float, *,
+             avoid_prompt: str | None = None, salt: int = 0) -> tuple[BedTemplate, int]:
     """Choose an underscore, and a seed, that differ from project to project.
 
     Both used to be constants: one of two prompt strings picked by a single boolean, and
@@ -161,10 +188,22 @@ def pick_bed(info: VideoInfo, analysis: dict, coverage: float) -> tuple[BedTempl
         str(len(analysis.get("shots") or [])), f"{coverage:.3f}",
     ])
     digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()
-    chosen = pool[int(digest[:8], 16) % len(pool)]
     # Not `hash()`: it is salted per process, so the same video would pick a different
     # bed on every run and re-scaffolding would silently replace the music.
-    seed = 1000 + int(digest[8:16], 16) % 90000
+    #
+    # `avoid_prompt` and `salt` are how the user asks for DIFFERENT music: the first
+    # sheet for a video is reproducible, and every request after it moves on to the next
+    # template in the mood and a fresh seed. Determinism was heard as "the same music
+    # every time" by someone who re-created the cue sheet hoping for a change.
+    avoid_at = next((i for i, b in enumerate(pool) if b.prompt == avoid_prompt), None)
+    if avoid_at is None:
+        # Nothing to avoid (a first sheet, or a prompt the user reworded): the stable choice.
+        chosen = pool[int(digest[:8], 16) % len(pool)]
+    else:
+        # The NEXT template in the mood, so repeated requests walk through every one of
+        # them rather than bouncing between two.
+        chosen = pool[(avoid_at + 1) % len(pool)]
+    seed = 1000 + (int(digest[8:16], 16) + salt * 7919) % 90000
     return chosen, seed
 
 
@@ -265,7 +304,7 @@ def _classify(strength: float, loudest: float) -> str:
 
 
 def scaffold(analysis: dict, *, preset: str | None = None,
-             engine: str | None = None) -> CueSheet:
+             engine: str | None = None, previous: CueSheet | None = None) -> CueSheet:
     """Build a starting cue sheet from `analysis.json` contents."""
     from . import engines as engine_registry
 
@@ -350,7 +389,12 @@ def scaffold(analysis: dict, *, preset: str | None = None,
 
     cues.sort(key=lambda c: c.at)
 
-    bed, bed_seed = pick_bed(info, analysis, coverage)
+    # A sheet re-created over an existing one gets different music, or the button that
+    # makes it does nothing audible. Everything else about the scaffold stays deterministic.
+    last = previous.music[0] if previous is not None and previous.music else None
+    bed, bed_seed = pick_bed(info, analysis, coverage,
+                             avoid_prompt=last.prompt if last else None,
+                             salt=(last.seed + 1) if last else 0)
 
     return CueSheet(
         version=CURRENT_VERSION,

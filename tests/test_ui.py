@@ -664,6 +664,44 @@ class TestLiveMix:
                            json={"cue": reworded}).json()["key"] != first
 
 
+class TestNewMusic:
+    def test_new_music_changes_the_style_and_nothing_else(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        wait_for(client, client.post(f"/api/project/{name}/analyze").json()["id"])
+        client.post(f"/api/project/{name}/scaffold", json={"preset": "short-form", "engine": "silence"})
+        before = client.get(f"/api/project/{name}").json()["cues"]["music"][0]
+        before["gain_db"] = -9.5                      # a user edit that must survive
+        client.put(f"/api/project/{name}/cues",
+                   json=client.get(f"/api/project/{name}").json()["cues"] | {
+                       "music": [before]})
+
+        res = client.post(f"/api/project/{name}/cue/{before['id']}/new_music")
+        assert res.status_code == 200
+        after = client.get(f"/api/project/{name}").json()["cues"]["music"][0]
+        assert after["prompt"] != before["prompt"] and after["seed"] != before["seed"]
+        assert res.json()["mood"] in after["note"]
+        for key in ("start", "end", "gain_db", "fade_in", "fade_out", "engine", "loop"):
+            assert after[key] == before[key], key
+
+    def test_recreating_the_cue_sheet_changes_the_music(self, client, fixture_video):
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        wait_for(client, client.post(f"/api/project/{name}/analyze").json()["id"])
+        client.post(f"/api/project/{name}/scaffold", json={"preset": "short-form"})
+        first = client.get(f"/api/project/{name}").json()["cues"]["music"][0]
+        client.post(f"/api/project/{name}/scaffold", json={"preset": "short-form"})
+        second = client.get(f"/api/project/{name}").json()["cues"]["music"][0]
+        assert (second["prompt"], second["seed"]) != (first["prompt"], first["seed"])
+
+    def test_unknown_bed_is_404(self, client, project):
+        assert client.post(f"/api/project/{project}/cue/nope/new_music").status_code == 404
+
+    def test_page_offers_new_music_on_bed_cards(self):
+        from hudka.ui.server import HERE
+
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        assert "mk('new music'" in page and "/new_music`" in page
+
+
 class TestMachineInTheGui:
     """The page used to expose no hardware information at all, and listed the medium
     engine as a plain selectable option on a card that would die loading it."""

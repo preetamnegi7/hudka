@@ -488,7 +488,13 @@ def create_app(workspace: Path) -> FastAPI:
         if not analysis:
             raise HTTPException(status_code=409, detail="analyse the video first")
 
-        sheet = design.scaffold(analysis, preset=opts.preset, engine=opts.engine)
+        previous = None
+        if (project / "cues.json").exists():
+            try:
+                previous = CueSheet.load(project / "cues.json")
+            except Exception:                     # an unreadable old sheet is not a reason to refuse
+                previous = None
+        sheet = design.scaffold(analysis, preset=opts.preset, engine=opts.engine, previous=previous)
         sheet.save(project / "cues.json")
         return JSONResponse({
             "ok": True,
@@ -496,6 +502,33 @@ def create_app(workspace: Path) -> FastAPI:
             "sfx": len(sheet.sfx),
             "cues": len(sheet.all_cues()),
         })
+
+    @app.post("/api/project/{name}/cue/{cue_id}/new_music")
+    def api_new_music(name: str, cue_id: str) -> JSONResponse:
+        """A different underscore for one music bed - template and seed - leaving its
+        placement, level, fades and engine exactly as they are.
+
+        Re-roll changes the seed and keeps the style; this changes the style. It exists
+        because the bed choice is deterministic per project, and "same music every time"
+        is what that sounds like to someone who wanted variety.
+        """
+        project = project_dir(name)
+        analysis = read_json(project / "analysis.json")
+        if not analysis or not (project / "cues.json").exists():
+            raise HTTPException(status_code=409, detail="analyse the video and create a cue sheet first")
+        sheet = CueSheet.load(project / "cues.json")
+        bed = next((b for b in sheet.music if b.id == cue_id), None)
+        if bed is None:
+            raise HTTPException(status_code=404, detail=f"no music bed called {cue_id}")
+        info = VideoInfo.model_validate(analysis["video"])
+        coverage = design.speech_coverage(analysis, info.duration)
+        template, seed = design.pick_bed(info, analysis, coverage,
+                                         avoid_prompt=bed.prompt, salt=bed.seed + 1)
+        bed.prompt = template.prompt
+        bed.seed = seed
+        bed.note = f"{template.mood} - reword this to suit the footage, or re-roll for another take"
+        sheet.save(project / "cues.json")
+        return JSONResponse({"id": bed.id, "mood": template.mood, "prompt": bed.prompt, "seed": bed.seed})
 
     @app.post("/api/project/{name}/render")
     def api_render(name: str, opts: RenderOptions) -> JSONResponse:
