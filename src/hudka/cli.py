@@ -150,6 +150,9 @@ def render(
         console.print(f"[red]render failed:[/] {exc}")
         raise typer.Exit(1)
 
+    from .timing import summary as timing_summary
+
+    console.print(f"[dim]{timing_summary(result.timings)}[/]")
     if result.is_preview:
         console.print(
             f"\n[yellow]PREVIEW[/] {result.final_video}\n"

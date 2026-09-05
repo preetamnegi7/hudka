@@ -503,6 +503,14 @@
             <div class="tiny muted" style="margin-top:7px">
               The fastest way to rebalance without touching cues. Leave duck empty to use the preset's.
             </div>
+
+            <div class="advlabel" style="margin-top:20px">this machine</div>
+            <div class="row" style="gap:8px;align-items:center">
+              <span id="machineLine" class="tiny muted"></span>
+              <div class="spacer"></div>
+              <button class="ghost sm" id="btnFreeGpu"
+                      title="Unload the models sitting on the GPU now. They reload on the next render (about 10-20 seconds).">Free GPU memory</button>
+            </div>
           </div>
 
           <div class="tabpane" role="tabpanel" id="paneOutput" aria-labelledby="tabOutput" tabindex="0" hidden>
@@ -1090,6 +1098,7 @@ function paintReport() {
   if (r.lufs !== null && r.lufs !== undefined) bits.push(`${r.lufs} LUFS`);
   if (r.peak_dbtp !== null && r.peak_dbtp !== undefined) bits.push(`peak ${r.peak_dbtp} dBTP`);
   bits.push(r.preview ? 'preview (placeholder tones)' : `verdict ${escapeHtml(String(r.verdict))}`);
+  if (r.timing_summary) bits.push(escapeHtml(r.timing_summary));
   const li = xs => xs.map(x => `<li>${escapeHtml(x)}</li>`).join('');
   const problems = (r.problems || []).length
     ? `<div class="advlabel" style="margin-top:12px">problems</div>
@@ -1188,7 +1197,7 @@ function startPoll(jobId, onDone) {
       }
       if (job.kind === 'generate') {
         const made = r.generated || 0, kept = r.cached || 0;
-        say(`${made} generated, ${kept} reused - ready to hear`,
+        say(`${made} generated, ${kept} reused - ready to hear${r.summary ? ' · ' + r.summary : ''}`,
             (r.warnings || []).length ? 'danger' : 'muted');
       } else if (r.preview) {
         say('preview rendered — placeholder tones, not real audio', 'danger');
@@ -1198,7 +1207,7 @@ function startPoll(jobId, onDone) {
           <strong>Render</strong> for real audio.</div>`;
       } else {
         const summary = r.lufs !== undefined
-          ? `${r.lufs} LUFS · peak ${r.peak} dBTP · ${r.generated} new, ${r.cached} reused`
+          ? `${r.lufs} LUFS · peak ${r.peak} dBTP · ${r.generated} new, ${r.cached} reused${r.summary ? ' · ' + r.summary : ''}`
           : 'done';
         if (r.verdict === 'warn') {
           say(summary + ' · rendered with warnings', 'danger');
@@ -1313,6 +1322,7 @@ function showTab(name) {
   const leaving = $(`#pane${cap(activeTab)}`);
   if (leaving && !leaving.hidden) tabScroll[activeTab] = leaving.scrollTop;
   activeTab = name;
+  if (name === 'mix') paintMachine();
   for (const t of TABS) {
     const pane = $(`#pane${cap(t)}`), btn = $(`#tab${cap(t)}`);
     const on = t === name;
@@ -1346,6 +1356,29 @@ const revealCue = sel => {
     const el = document.querySelector(sel);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
+};
+
+/* What the card is doing right now: which models are resident, how much they hold, and
+   when they leave. Fetched when the Mix tab is shown, not polled. */
+async function paintMachine() {
+  const host = $('#machineLine');
+  if (!host) return;
+  try {
+    const m = await api('/api/machine');
+    const workers = (m.workers || []).filter(w => w.alive !== false);
+    const resident = workers.length
+      ? workers.map(w => `${w.engine}${w.resident_gb ? ` ${w.resident_gb.toFixed(1)} GB` : ''}`).join(', ')
+      : 'none';
+    host.textContent = `${m.summary} · resident: ${resident}`
+      + (workers.length ? ` · unloads after ${m.idle_minutes} min idle` : '');
+    host.title = m.reason || '';
+    $('#btnFreeGpu').disabled = !workers.length;
+  } catch (err) { host.textContent = ''; }
+}
+$('#btnFreeGpu').onclick = async function () {
+  await api('/api/workers/release', { method: 'POST' });
+  this.blur();
+  paintMachine();
 };
 
 /* Compact density is a per-machine preference, so it lives in localStorage - which

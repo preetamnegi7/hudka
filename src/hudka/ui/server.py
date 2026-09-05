@@ -23,8 +23,9 @@ from pydantic import BaseModel, ValidationError
 
 from .. import analyze as analyze_mod
 from .. import design, engines, mix as mix_mod, presets, render as render_mod
-from ..engines import hardware
+from ..engines import hardware, pool as pool_mod
 from ..engines.base import GenerateRequest, LicenceError
+from ..timing import summary as timing_summary
 from ..schema import CueSheet, VideoInfo
 from .jobs import JobRunner
 
@@ -67,6 +68,9 @@ def create_app(workspace: Path) -> FastAPI:
 
     app = FastAPI(title="Hudka", docs_url=None, redoc_url=None)
     runner = JobRunner()
+    # Resident engine workers must not outlive the GUI: ask them to unload on shutdown.
+    # (The pool's Job Object and the workers' parent watchdog cover the unclean exits.)
+    app.router.add_event_handler("shutdown", lambda: pool_mod.get_pool().shutdown())
 
     # ---------------------------------------------------------------- helpers
 
@@ -527,6 +531,8 @@ def create_app(workspace: Path) -> FastAPI:
                 # noise once hit the loudness target exactly.
                 "verdict": result.verdict,
                 "warnings": result.quality.warnings() if result.quality else [],
+                "timings": result.timings,
+                "summary": timing_summary(result.timings),
             }
 
         return JSONResponse(runner.submit("render", name, work).as_dict())
@@ -553,6 +559,20 @@ def create_app(workspace: Path) -> FastAPI:
                 raise RuntimeError(str(exc)) from exc
 
         return JSONResponse(runner.submit("generate", name, work).as_dict())
+
+    @app.get("/api/machine")
+    def api_machine() -> JSONResponse:
+        """This machine right now, and which models are sitting resident on it."""
+        return JSONResponse({
+            **_hardware_payload(),
+            "workers": pool_mod.get_pool().status(),
+            "idle_minutes": round(pool_mod.get_pool().idle_seconds / 60.0, 1),
+        })
+
+    @app.post("/api/workers/release")
+    def api_workers_release() -> JSONResponse:
+        """Unload the resident models now. They reload on the next render."""
+        return JSONResponse({"released": pool_mod.get_pool().release()})
 
     @app.post("/api/project/{name}/variations")
     def api_variations(name: str, opts: VariationOptions) -> JSONResponse:

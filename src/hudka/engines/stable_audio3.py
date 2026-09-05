@@ -193,6 +193,10 @@ class StableAudio3Engine(Engine):
         self._model = model
         return model
 
+    def load(self) -> None:
+        """Load now, so a worker can report load time apart from the first cue."""
+        self._load()
+
     @staticmethod
     def _text_encoder(model):
         """The text encoder module, wherever the library keeps it - or None."""

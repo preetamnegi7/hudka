@@ -602,95 +602,44 @@ class TestQualityGateInRender:
         assert "ram" in render._explain_exit(-9 & 0xFFFFFFFF, "").lower()
         assert "vram" in render._explain_exit(1, "CUDA out of memory").lower()
 
-    def test_worker_warning_lines_reach_the_log(self, monkeypatch, tmp_path):
-        """An engine's `warning:` on stderr used to be read only after a failed exit."""
-        import io
+    def test_worker_warnings_are_covered_by_the_pool_tests(self):
+        """The `warning:` path lives in engines/pool.py now and is exercised through a real
+        child process in tests/test_pool.py (TestPipes). Kept here as a signpost."""
+        from hudka.engines import pool as pool_mod
 
-        from hudka.engines.base import GenerateRequest
-        from hudka.engines.stub import SilenceEngine
-
-        class FakeStdin:
-            def __init__(self): self.buf, self.done = "", []
-            def write(self, s): self.buf += s
-            def close(self):
-                job = json.loads(self.buf)
-                for item in job["cues"]:
-                    SilenceEngine().generate(
-                        GenerateRequest(prompt=item["prompt"], duration=item["duration"],
-                                        seed=item["seed"]), Path(item["dest"]))
-                self.done = [item["id"] for item in job["cues"]]
-
-        class LazyLines:
-            """Iterable only when iterated - `_run_worker` truth-tests stdout before writing."""
-            def __init__(self, stdin): self.stdin = stdin
-            def __iter__(self):
-                return iter([json.dumps({"done": d}) + "\n" for d in self.stdin.done])
-
-        class FakeProc:
-            def __init__(self, *a, **k):
-                self.stdin = FakeStdin()
-                self.stdout = LazyLines(self.stdin)
-                self.stderr = io.StringIO("warning: test engine complained\n")
-                self.returncode = 0
-            def wait(self): return 0
-
-        monkeypatch.setattr(render.subprocess, "Popen", FakeProc)
-        log: list[str] = []
-        dest = tmp_path / "x.wav"
-        render._run_worker("silence", [{"id": "x", "prompt": "p", "duration": 1.0,
-                                        "seed": 1, "dest": str(dest), "video": None,
-                                        "window": [0, 1], "extra": {}}], None, log.append)
-        assert any("test engine complained" in line for line in log)
+        assert callable(pool_mod.EngineWorker.run)
 
 
-class TestWorkerPipes:
-    """The worker's stderr must be drained while stdout is read, or it deadlocks.
+class TestTimings:
+    """A render used to measure nothing: a 20 s model load and a 13 s warm-up were paid on
+    every render with nothing on screen to say so."""
 
-    Reproduced through a real OS pipe, not a fake: a child that writes well past any pipe
-    buffer to stderr before it finishes. Without a concurrent drain the child blocks on
-    the write, the parent blocks reading stdout, and the render never ends - which is
-    exactly what happened on a 36-cue project.
-    """
+    def test_render_report_records_stage_timings(self, fixture_video, tmp_path):
+        info = analyze_mod.probe(fixture_video)
+        result = render.render(sheet_for(info), tmp_path)
+        report = json.loads((tmp_path / "render_report.json").read_text(encoding="utf-8"))
+        for stage in ("engines", "place", "mix", "master", "mux", "total"):
+            assert stage in report["timings"], stage
+            assert report["timings"][stage] >= 0
+        assert report["timing_summary"].startswith("engines ")
+        assert result.timings == report["timings"]
+        assert set(result.timings["cues"]) == {"bed", "hit1", "hit2"}
+        assert "silence" in result.timings["workers"]
 
-    def test_a_chatty_worker_does_not_deadlock(self, monkeypatch, tmp_path):
-        import subprocess
-        import sys
-        import threading
+    def test_generate_only_reports_timings(self, fixture_video, tmp_path):
+        info = analyze_mod.probe(fixture_video)
+        out = render.generate_only(sheet_for(info), tmp_path)
+        assert out["timings"]["engines"] >= 0 and "engines" in out["summary"]
 
-        dest = tmp_path / "x.wav"
-        # A child that floods stderr (2 MB, far beyond any pipe buffer), writes a valid
-        # WAV where the worker would, then reports the cue done on stdout.
-        script = (
-            "import sys, wave, json\n"
-            "sys.stderr.write('x' * 2_000_000); sys.stderr.flush()\n"
-            f"w = wave.open({str(dest)!r}, 'wb'); w.setnchannels(2); w.setsampwidth(2); "
-            "w.setframerate(44100); w.writeframes(bytes([0, 16]) * 88200); w.close()\n"
-            "print(json.dumps({'done': 'x'}), flush=True)\n"
-        )
-        real_popen = subprocess.Popen
+    def test_summary_reads_as_a_sentence(self):
+        from hudka.timing import Timings, summary
 
-        def spawn(args, **kw):
-            return real_popen([sys.executable, "-c", script], **kw)
-        monkeypatch.setattr(render.subprocess, "Popen", spawn)
-
-        log: list[str] = []
-        outcome: dict = {}
-
-        def run():
-            try:
-                render._run_worker("silence", [{"id": "x", "prompt": "p", "duration": 1.0,
-                                                "seed": 1, "dest": str(dest), "video": None,
-                                                "window": [0, 1], "extra": {}}], None, log.append)
-                outcome["ok"] = True
-            except Exception as exc:  # pragma: no cover - surfaces in the assertion
-                outcome["error"] = exc
-
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-        worker.join(timeout=60)
-        assert not worker.is_alive(), "worker deadlocked on a full stderr pipe"
-        assert outcome.get("ok"), outcome.get("error")
-        assert any("render  x" in line for line in log)
+        t = Timings()
+        t["engines"] = 21.3; t["load"] = 13.0; t["place"] = 1.3; t["mix"] = 0.3
+        t["master"] = 7.7; t["mux"] = 8.3; t["total"] = t.total()
+        assert summary(t) == "engines 21.3s (load 13.0s) · place 1.3s · mix 0.3s · master 7.7s · mux 8.3s · total 39s"
+        t["resident"] = True
+        assert "(load 13.0s, resident)" in summary(t)
 
 
 class TestProxyAnalysis:

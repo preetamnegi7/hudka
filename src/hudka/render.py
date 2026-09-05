@@ -13,11 +13,8 @@ Two things drive the structure here:
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-import threading
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -25,8 +22,11 @@ import numpy as np
 
 from . import balance, engines, mix, presets, qa
 from .audio import write_wav
-from .engines import hardware
+from .engines import hardware, pool as pool_mod
 from .engines.base import GenerateRequest, require_usable
+# Re-exported: the exit-code diagnosis lives with the worker pool now, and tests read it here.
+from .engines.pool import _EXIT_MEANINGS, _explain_exit, _tail, _worker_error  # noqa: F401
+from .timing import Timings, summary as timing_summary
 from .provenance import Ledger
 from .schema import BedCue, CueSheet, SfxCue
 
@@ -53,6 +53,8 @@ class RenderResult:
     #: let pure noise through with a green tick; this is what says whether it is sound.
     quality: "qa.RenderQuality | None" = None
     verdict: str = "ok"
+    #: Seconds per stage (timing.STAGES), plus load/generate/cues from the workers.
+    timings: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,18 @@ def plan_generation(engine_id: str, kind: str, duration: float, *,
     return Plan(engine_id, extra)
 
 
+def _fold_report(timings: dict, engine_id: str, report: "pool_mod.JobReport") -> None:
+    """Add one engine's worker report to the render's timings."""
+    from dataclasses import asdict
+
+    timings["load"] = round(float(timings.get("load", 0.0)) + report.load_seconds, 2)
+    timings["generate"] = round(float(timings.get("generate", 0.0)) + report.generate_seconds, 2)
+    timings.setdefault("cues", {}).update(report.cues)
+    timings.setdefault("workers", {})[engine_id] = asdict(report)
+    was = timings.get("resident")
+    timings["resident"] = report.resident if was is None else bool(was and report.resident)
+
+
 def _kind_of(cue: SfxCue | BedCue, sheet: CueSheet) -> str:
     if any(cue.id == m.id for m in sheet.music):
         return "music"
@@ -134,6 +148,7 @@ def generate_stems(
     opted_in: Iterable[str] = (),
     device: str | None = None,
     progress: Progress | None = None,
+    timings: dict | None = None,
 ) -> tuple[dict[str, Path], list[qa.StemQuality]]:
     """Generate one WAV per cue, reusing cached stems where nothing changed.
 
@@ -257,7 +272,9 @@ def generate_stems(
             )
 
         if pending:
-            _run_worker(engine_id, pending, device, say)
+            report = _run_worker(engine_id, pending, device, say) or pool_mod.JobReport(engine_id=engine_id)
+            if timings is not None:
+                _fold_report(timings, engine_id, report)
             generated += len(pending)
             for item in pending:
                 cue = next(c for c in cues if c.id == item["id"])
@@ -324,12 +341,13 @@ def render(
     # A stale report behind a fresh failure would show the last render's green state.
     (out_dir / "render_report.json").unlink(missing_ok=True)
 
+    timings = Timings()
     ledger = Ledger(video=str(video), preview=preview)
-    stems, qualities = generate_stems(
+    stems, qualities = timings.timed("engines", lambda: generate_stems(
         sheet, out_dir, ledger,
         allow_noncommercial=allow_noncommercial, opted_in=opted_in,
-        device=device, progress=progress,
-    )
+        device=device, progress=progress, timings=timings,
+    ))
 
     buses = out_dir / "buses"
     bus_paths: dict[str, Path | None] = {"music": None, "sfx": None, "ambience": None}
@@ -340,6 +358,7 @@ def render(
     dialogue = None
     anchor_db = 0.0
     key_ref_lufs: float | None = None
+    timings.begin("dialogue")
 
     if sheet.keep_original_audio and sheet.video.has_audio:
         dialogue = mix.extract_original_audio(video, buses / "original.wav", total)
@@ -354,6 +373,8 @@ def render(
             else:
                 say("could not measure the source loudness; buses left unanchored")
 
+    timings.end("dialogue")
+    timings.begin("place")
     say("placing cues")
     # FLOAT buses: normalised, gained and panned cues can pass 0 dBFS before the limiter,
     # and a fixed-point bus would clip them here rather than in the mixdown.
@@ -382,12 +403,14 @@ def render(
             subtype="FLOAT",
         )
 
-    report = balance.measure(out_dir)
+    timings.end("place")
+    report = timings.timed("balance", lambda: balance.measure(out_dir))
     if report:
         for problem in report.problems():
             say(f"  balance: {problem}")
 
     say("mixing and ducking")
+    timings.begin("mix")
     raw = mix.mixdown(
         music=bus_paths["music"], sfx=bus_paths["sfx"], ambience=bus_paths["ambience"],
         dialogue=dialogue, dest=out_dir / "mix_raw.wav",
@@ -397,9 +420,12 @@ def render(
         key_ref_lufs=key_ref_lufs,
     )
 
+    timings.end("mix")
     say(f"mastering to {sheet.target_lufs} LUFS / {sheet.true_peak_db} dBTP")
+    timings.begin("master")
     mastered = mix.normalize(raw, out_dir / "mix.wav", sheet.target_lufs, sheet.true_peak_db)
     lufs, peak = mix.integrated_lufs(mastered)
+    timings.end("master")
 
     mix_samples, _ = mix.read_wav(mastered)
     quality = qa.RenderQuality(
@@ -417,13 +443,18 @@ def render(
         say(f"  check: {line}")
 
     say("muxing")
-    final = mix.mux(video, mastered, out_dir / ("preview.mp4" if preview else "final.mp4"))
+    final = timings.timed("mux", lambda: mix.mux(
+        video, mastered, out_dir / ("preview.mp4" if preview else "final.mp4")))
 
+    timings.begin("provenance")
     ledger.verify(out_dir / "stems")
     prov_json, prov_md = ledger.save(out_dir)
+    timings.end("provenance")
     raw.unlink(missing_ok=True)
 
-    _write_report(out_dir, quality, lufs, peak, report, preview)
+    timings["total"] = timings.total()
+    say(timing_summary(timings))
+    _write_report(out_dir, quality, lufs, peak, report, preview, timings)
 
     return RenderResult(
         final_video=final, mix_wav=mastered, provenance=prov_json, licence_report=prov_md,
@@ -431,11 +462,13 @@ def render(
         cached_count=sum(1 for r in ledger.records if r.cached),
         generated_count=sum(1 for r in ledger.records if not r.cached),
         is_preview=preview, quality=quality, verdict=quality.verdict,
+        timings=dict(timings),
     )
 
 
 def _write_report(out_dir: Path, quality: qa.RenderQuality, lufs: float, peak: float,
-                  report: "balance.Balance | None", preview: bool) -> Path:
+                  report: "balance.Balance | None", preview: bool,
+                  timings: dict | None = None) -> Path:
     """The render's verdict, on disk, so the GUI can badge a project truthfully."""
     from dataclasses import asdict
 
@@ -452,117 +485,22 @@ def _write_report(out_dir: Path, quality: qa.RenderQuality, lufs: float, peak: f
             "sfx_events": report.sfx_events, "sfx_per_minute": round(report.sfx_per_minute, 1),
         } if report else None,
         "stems": [asdict(q) for q in quality.stems],
+        # Formatted here once; the page shows the string rather than re-deriving it.
+        "timings": dict(timings or {}),
+        "timing_summary": timing_summary(timings or {}),
     }, indent=2) + "\n", encoding="utf-8")
     return path
 
 
 def _run_worker(engine_id: str, cues: list[dict], device: str | None,
-                say: Progress) -> None:
-    """Generate this engine's cues in a dedicated process.
+                say: Progress) -> "pool_mod.JobReport":
+    """Generate this engine's cues in its resident worker (engines/pool.py).
 
-    Isolation is the point: a model that crashes the interpreter - which happens here when
-    a second model is loaded after the first is released - must not take the caller down
-    with it. In the GUI the caller is the web server, so an unisolated crash would kill
-    the whole app mid-render.
+    Isolation is still the point - one engine per process, a native crash is an exit code
+    the parent explains. What changed is lifetime: the model loads once per session rather
+    than once per render, and the report says how long each part took.
     """
-    payload = json.dumps({"engine": engine_id, "device": device, "cues": cues})
-    by_id = {c["id"]: c for c in cues}
-
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "hudka._worker"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace",
-    )
-    assert proc.stdin and proc.stdout and proc.stderr
-
-    # Drain stderr on its own thread while stdout is read for progress. Reading stdout to
-    # EOF first and stderr afterwards is the textbook pipe deadlock, and it happened: each
-    # cue's tqdm bar goes to stderr, a 7-cue render never filled the pipe buffer, and a
-    # 36-cue render blocked the worker on a full pipe while the parent waited on stdout -
-    # 3.4 GB resident, 2% GPU, 15 seconds of CPU across half an hour.
-    captured: list[str] = []
-    drain = threading.Thread(target=lambda: captured.append(proc.stderr.read()), daemon=True)
-    drain.start()
-
-    proc.stdin.write(payload)
-    proc.stdin.close()
-
-    for line in proc.stdout:
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            cue_id = json.loads(line).get("done")
-        except json.JSONDecodeError:
-            continue
-        if cue_id in by_id:
-            say(f"  render  {cue_id}  {by_id[cue_id]['prompt'][:52]}")
-
-    drain.join()
-    stderr = "".join(captured)
-    # Engines print `warning:` lines for things like saturated output. Those used to be
-    # read only when the exit code was non-zero - which is to say, never for a warning.
-    for line in stderr.splitlines():
-        if line.lower().startswith("warning:"):
-            say(f"  {line.strip()}")
-    if proc.wait() != 0:
-        raise RuntimeError(_worker_error(engine_id, proc.returncode, stderr))
-
-    missing = [c["id"] for c in cues if not Path(c["dest"]).exists()]
-    if missing:
-        raise RuntimeError(
-            f"{engine_id} finished without producing: {', '.join(missing)}\n"
-            f"{_tail(stderr)}"
-        )
-
-
-#: What a silent worker death usually means, by exit status. Blaming VRAM for all of
-#: them - as this used to - sent a user with weights on a USB drive to shrink models.
-_EXIT_MEANINGS = {
-    0xC0000006: ("STATUS_IN_PAGE_ERROR: a memory-mapped file could not be read. The model "
-                 "weights are almost certainly on an external, USB or exFAT drive. Move "
-                 "them to an internal SSD (set HUDKA_MODEL_DIR) and retry."),
-    0xC0000005: ("access violation inside the model process - usually a PyTorch/CUDA "
-                 "driver mismatch. Update the NVIDIA driver, or reinstall torch with "
-                 "Setup.bat."),
-    0xFFFFFFF7: ("killed (SIGKILL) - the machine ran out of system RAM while loading the "
-                 "model. Close other applications, or use the small engines."),
-    0xFFFFFFF5: ("segmentation fault inside the model process - usually a broken or "
-                 "mismatched torch build. Reinstall torch with Setup.bat."),
-}
-
-
-def _explain_exit(code: int, stderr: str) -> str:
-    """A cause a person can act on, from the exit status and whatever stderr holds."""
-    if "CUDA out of memory" in stderr or "OutOfMemoryError" in stderr:
-        return ("CUDA ran out of VRAM. Close other GPU applications (`hudka doctor` shows "
-                "how much is free), or use the small engines - stable-audio-3-small-sfx for "
-                "effects, stable-audio-3-small-music for beds - which peak near 2 GB.")
-    normalised = code & 0xFFFFFFFF
-    if normalised in _EXIT_MEANINGS:
-        return _EXIT_MEANINGS[normalised]
-    if code in (137, 9):
-        return _EXIT_MEANINGS[0xFFFFFFF7]
-    if code in (139, 11):
-        return _EXIT_MEANINGS[0xFFFFFFF5]
-    return ("the model process died without raising. Check `hudka doctor`, and that the "
-            "model weights are on an internal drive.")
-
-
-def _worker_error(engine_id: str, code: int, stderr: str) -> str:
-    """Explain a worker failure, including the crash case that prints no traceback."""
-    if "Traceback" not in stderr:
-        return (
-            f"{engine_id} crashed while generating (exit code {code}).\n\n"
-            f"{_explain_exit(code, stderr)}\n\n"
-            f"{_tail(stderr)}"
-        )
-    return f"{engine_id} failed (exit code {code}):\n{_tail(stderr)}"
-
-
-def _tail(text: str, lines: int = 12) -> str:
-    kept = [ln for ln in text.strip().splitlines() if ln.strip()]
-    return "\n".join(kept[-lines:])
+    return pool_mod.get_pool().run(engine_id, cues, device, say)
 
 
 #: Seeds for alternative takes are derived from the cue's own seed by a fixed stride, so
@@ -602,12 +540,14 @@ def generate_only(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    timings = Timings()
     ledger = Ledger(video=str(Path(sheet.video.path)))
-    stems, qualities = generate_stems(
+    stems, qualities = timings.timed("engines", lambda: generate_stems(
         sheet, out_dir, ledger,
         allow_noncommercial=allow_noncommercial, opted_in=opted_in,
-        device=device, progress=progress,
-    )
+        device=device, progress=progress, timings=timings,
+    ))
+    timings["total"] = timings.total()
 
     warnings = [w for q in qualities for w in q.warnings()]
     for warning in warnings:
@@ -618,6 +558,8 @@ def generate_only(
         "generated": sum(1 for r in ledger.records if not r.cached),
         "cached": sum(1 for r in ledger.records if r.cached),
         "warnings": warnings,
+        "timings": dict(timings),
+        "summary": timing_summary(timings),
     }
 
 
