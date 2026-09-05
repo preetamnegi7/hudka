@@ -508,6 +508,41 @@ class TestPreviewThroughTheGui:
         # The two videos must cache-bust independently, or a re-render serves the old cut.
         assert "src.endsWith('/preview') ? proj.preview_at : proj.rendered_at" in page
 
+    def test_a_preview_is_still_there_after_the_project_is_reopened(self, client, fixture_video):
+        """The defect behind "preview never worked": viewPreview had exactly one writer -
+        startPoll, when a render job finished - so a preview could be seen only between
+        that job ending and the next reload. Reopening went back to the untouched source
+        with no control anywhere to ask for the preview again."""
+        from hudka.ui.server import HERE
+
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        wait_for(client, client.post(f"/api/project/{name}/analyze").json()["id"])
+        client.post(f"/api/project/{name}/scaffold", json={"preset": "short-form"})
+        wait_for(client, client.post(f"/api/project/{name}/render",
+                                     json={"preview": True}).json()["id"])
+
+        reopened = client.get(f"/api/project/{name}").json()
+        assert reopened["stage"] == "designed" and reopened["has_preview"] is True
+        assert reopened["preview_report"]["preview"] is True
+        assert reopened["preview_provenance"], "the preview keeps its own ledger"
+        assert reopened["stems"] == [], "a preview must not write into the real stem tree"
+        assert reopened["preview_stems"], "the preview's own stems must be reachable"
+        assert reopened["cues_at"] is not None
+
+        cue = reopened["preview_stems"][0]
+        assert client.get(f"/media/{name}/preview-stem/{cue}").status_code == 200
+        assert client.get(f"/media/{name}/stem/{cue}").status_code == 404,             "the trees must not be merged - a mixture plays real audio for some cues and a"
+        assert client.get(f"/download/{name}/preview-licence").status_code == 200
+
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        assert "viewPreview = !!(proj.has_preview && proj.stage !== 'rendered')" in page
+        assert "proj.preview_report" in page and "proj.preview_stems" in page
+
+        assert client.delete(f"/api/project/{name}/preview").status_code == 200
+        gone = client.get(f"/api/project/{name}").json()
+        assert gone["has_preview"] is False and gone["preview_stems"] == []
+        assert client.get(f"/download/{name}/preview-licence").status_code == 404
+
 
 class TestVerdictThroughTheGui:
     def test_render_result_and_project_carry_the_verdict(self, client, project):

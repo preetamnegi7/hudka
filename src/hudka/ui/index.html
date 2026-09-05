@@ -425,8 +425,14 @@
     <section>
       <div class="panel stage">
         <div class="row stagehead">
-          <h2 style="margin:0">Preview</h2>
+          <!-- "Player", not "Preview": that word already means placeholder-tone mode on
+               the footer checkbox and in the banner, and one word for two things is half
+               of why a preview was indistinguishable from the finished render. -->
+          <h2 style="margin:0">Player</h2>
           <div class="spacer"></div>
+          <label class="tiny muted hidden" id="prevWatchWrap"
+                 title="Play the placeholder-tone preview instead of the finished render"><input
+                 type="checkbox" id="prevWatch" style="vertical-align:-2px"> watch preview</label>
           <label class="tiny muted" id="abWrap"><input type="checkbox" id="ab" style="vertical-align:-2px"> original</label>
           <button class="ghost sm" id="btnFull" title="Full screen (Shift+F)" aria-label="Full screen">&#9974;</button>
         </div>
@@ -588,6 +594,7 @@ let proj = null;       // current project payload
 let dirty = false;
 let poll = null;
 const badCues = new Set();   // cue ids the server rejected
+let stemAudio = null;        // the one-shot 'stem' preview, so presses replace rather than layer
 const STAGES = ['imported', 'analysed', 'designed', 'rendered'];
 
 const say = (msg, cls = '') => { const e = $('#hstatus'); e.textContent = msg; e.className = 'tiny ' + (cls || 'muted'); };
@@ -786,7 +793,13 @@ async function openProject(name, fromHistory = false) {
   proj = await api(`/api/project/${name}`);
   if (!fromHistory && location.hash !== `#/p/${name}`) location.hash = `#/p/${name}`;
   markClean();
-  viewPreview = false;
+  /* A preview that is the only rendered thing IS what the player should show. Before
+     this, viewPreview had exactly one writer - startPoll, when a render job finished - so
+     a preview was visible only between that job ending and the next reload. Reopening
+     went back to the untouched source with no control anywhere to ask for it again, even
+     though it was on disk and /media/<name>/preview served it 200. */
+  viewPreview = !!(proj.has_preview && proj.stage !== 'rendered');
+  $('#ab').checked = false;        // or the A/B state leaks in from the last project
   $('#previewMode').checked = false;
   syncPreviewUi();
   $('#viewLibrary').classList.add('hidden');
@@ -853,41 +866,48 @@ function paintBanner() {
      gated out of. startPoll sets this same warning, then the refresh that follows it
      calls paintBanner; with a stage test here that refresh silently wiped the warning
      and a preview looked exactly like the finished thing. */
+  /* Composed, not a chain of early returns. Now that a preview can open BY ITSELF, an
+     early return here would hide "Model weights not authorised" and "the source video is
+     missing" from exactly the population that previews - and the preview warning would
+     then tell them to press Render, which dies with a LicenceError. */
+  let parts = '';
   if (viewPreview && proj.has_preview) {
-    host.innerHTML = `<div class="banner warn">
+    const stale = dirty
+      || (proj.cues_at && proj.preview_at && proj.preview_at < proj.cues_at)
+      ? ' <strong>This preview does not include your latest cue changes.</strong>' : '';
+    const older = proj.rendered_at && proj.preview_at && proj.preview_at < proj.rendered_at
+      ? ' It is also older than your finished render.' : '';
+    parts += `<div class="banner warn">
       <strong>Showing a preview.</strong> Placeholder tones, not real audio.
       ${proj.stage === 'rendered'
-        ? 'Your finished render is still there - untick <em>preview</em> and press <strong>Re-render</strong>, or reload the project, to hear it again.'
-        : 'Untick <em>preview</em> and press <strong>Render</strong> to generate sound.'}</div>`;
-    return;
+        ? 'Your finished render is still there - untick <em>watch preview</em> above the player to hear it again.'
+        : 'Press <strong>Render</strong> with <em>preview (placeholder tones)</em> unticked for real sound.'}${stale}${older}</div>`;
   }
   if (proj.report && proj.report.verdict === 'warn' && proj.stage === 'rendered'
       && (proj.report.warnings || []).length) {
-    showWarnings(proj.report.warnings);
+    // showWarnings writes the host itself, so it goes last and keeps what we have.
+    host.innerHTML = parts;
+    showWarnings(proj.report.warnings, parts);
     return;
   }
   const auth = lib.engine_auth || {};
   if (auth.needed && auth.authorised === false && !proj.missing_source) {
-    host.innerHTML = `<div class="banner warn">
+    parts += `<div class="banner warn">
       <strong>Model weights not authorised</strong> &mdash; a normal render will fail.
       Tick <em>preview</em> to hear timing now, or
       <a href="https://huggingface.co/${auth.repo}" target="_blank" rel="noopener">accept the licence</a>
       and run <span class="mono">uv run hf auth login</span>.
     </div>`;
-    return;
   }
   if (proj.missing_source) {
-    host.innerHTML = `<div class="banner err">The source video is missing or has been moved.</div>`;
-    return;
+    parts += `<div class="banner err">The source video is missing or has been moved.</div>`;
   }
-  const rec = proj.provenance || [];
-  const noncommercial = rec.filter(r => r.commercial_use === false);
-  if (noncommercial.length) {
-    host.innerHTML = `<div class="banner err"><strong>This render contains non-commercial audio.</strong>
+  const rec = (viewPreview && proj.has_preview ? proj.preview_provenance : proj.provenance) || [];
+  if (rec.filter(r => r.commercial_use === false).length) {
+    parts += `<div class="banner err"><strong>This render contains non-commercial audio.</strong>
       It cannot be monetized or used in client work.</div>`;
-    return;
   }
-  host.innerHTML = '';
+  host.innerHTML = parts;
 }
 
 function paintPlayer() {
@@ -913,9 +933,36 @@ function paintPlayer() {
   // lastChild, not firstChild: firstChild is the checkbox, so clearing it did nothing and
   // the append stacked up - after two repaints the label read "original original".
   $('#abWrap').lastChild.textContent =
-    viewPreview && proj.stage !== 'rendered' ? ' original (vs preview)' : ' original';
+    viewPreview ? ' original (vs preview)' : ' original';
+  // The switch back and forth. Without it a preview over a finished render can only be
+  // seen in the moments after its job ends.
+  $('#prevWatchWrap').classList.toggle('hidden', !proj.has_preview);
+  $('#prevWatch').checked = viewPreview;
 }
-$('#ab').onchange = () => { $('#player').dataset.src = ''; paintPlayer(); };
+
+/* Both toggles reassign player.src, which runs the media load algorithm and resets
+   currentTime to 0 - and the timeupdate auto-follow then yanks #tlScroll back to zero, so
+   an A/B compare was impossible anywhere but the very start. Keep the place. blur() so
+   Space transports instead of re-firing the checkbox. */
+function swapPlayerSource(fn) {
+  const p = $('#player');
+  const keep = p.currentTime, wasPlaying = !p.paused;
+  fn();
+  p.dataset.src = '';
+  paintProject();
+  if (keep) {
+    p.currentTime = keep;      // before metadata this sets the default start position
+    p.addEventListener('loadeddata', () => {
+      p.currentTime = keep;
+      if (wasPlaying) p.play().catch(() => {});
+    }, { once: true });
+  }
+}
+$('#ab').onchange = function () { swapPlayerSource(() => {}); this.blur(); };
+$('#prevWatch').onchange = function () {
+  swapPlayerSource(() => { viewPreview = $('#prevWatch').checked; });
+  this.blur();
+};
 
 function syncPreviewUi() {
   const on = $('#previewMode').checked;
@@ -971,9 +1018,27 @@ function paintSettings() {
 }
 
 function paintDownloads() {
-  $('#downloads').innerHTML = proj.stage === 'rendered' ? `
-    <a href="/download/${proj.name}/video"><button class="sm">Download video</button></a>
-    <a href="/download/${proj.name}/licence"><button class="ghost sm">Licence report</button></a>` : '';
+  const onPreview = viewPreview && proj.has_preview;
+  const bits = [];
+  if (proj.stage === 'rendered') {
+    // This button always hands over final.mp4, never what the player happens to show.
+    bits.push(`<a href="/download/${proj.name}/video"><button class="sm">Download video</button></a>`);
+    if (onPreview) bits.push('<span class="tiny muted">(the finished render, not this preview)</span>');
+  }
+  // The licence report must describe what is on screen, not the other render.
+  if (onPreview) bits.push(`<a href="/download/${proj.name}/preview-licence"><button class="ghost sm">Preview licence report</button></a>`);
+  else if (proj.stage === 'rendered') bits.push(`<a href="/download/${proj.name}/licence"><button class="ghost sm">Licence report</button></a>`);
+  if (proj.has_preview) bits.push('<button class="ghost sm danger" id="btnDelPreview" title="A preview re-muxes the whole picture, so it is about as big as your video">delete preview</button>');
+  if (proj.stage !== 'rendered' && proj.has_preview)
+    bits.push('<span class="tiny muted">preview only &mdash; render for real to download</span>');
+  $('#downloads').innerHTML = bits.join(' ');
+  const del = $('#btnDelPreview');
+  if (del) del.onclick = async () => {
+    await api(`/api/project/${proj.name}/preview`, { method: 'DELETE' });
+    viewPreview = false;
+    $('#player').dataset.src = '';
+    await refresh();
+  };
 }
 
 /* The render report, from the file the renderer actually wrote. Note the key is
@@ -981,7 +1046,11 @@ function paintDownloads() {
    result object that startPoll reads. */
 function paintReport() {
   const host = $('#renderReport');
-  const r = proj.report;
+  // One flag for BOTH halves. Switching only `r` left the assets paragraph and the
+  // Licence button describing the real render's ledger while the player played
+  // placeholder tones - a licence assertion about audio nobody generated.
+  const onPreview = !!(viewPreview && proj.has_preview && proj.preview_report);
+  const r = onPreview ? proj.preview_report : proj.report;
   if (!r) { host.innerHTML = 'Not rendered yet.'; return; }
   const bits = [];
   if (r.lufs !== null && r.lufs !== undefined) bits.push(`${r.lufs} LUFS`);
@@ -994,10 +1063,15 @@ function paintReport() {
   const warnings = (r.warnings || []).length
     ? `<div class="advlabel" style="margin-top:12px">warnings</div>
        <ul style="margin:4px 0 0 18px;padding:0">${li(r.warnings)}</ul>` : '';
-  const prov = (proj.provenance || []).length
-    ? `<div class="advlabel" style="margin-top:12px">assets</div>
-       <div>${proj.provenance.length} generated asset${proj.provenance.length === 1 ? '' : 's'} &mdash; the
-       licence report lists engine, licence, prompt and seed for each.</div>` : '';
+  const records = (onPreview ? proj.preview_provenance : proj.provenance) || [];
+  const prov = !records.length ? ''
+    : onPreview
+      ? `<div class="advlabel" style="margin-top:12px">assets</div>
+         <div>${records.length} placeholder tone${records.length === 1 ? '' : 's'} &mdash; nothing
+         generated, nothing to licence.</div>`
+      : `<div class="advlabel" style="margin-top:12px">assets</div>
+         <div>${records.length} generated asset${records.length === 1 ? '' : 's'} &mdash; the
+         licence report lists engine, licence, prompt and seed for each.</div>`;
   host.innerHTML = `<div>${bits.join(' &middot; ')}</div>${problems}${warnings}${prov}`;
 }
 
@@ -1121,10 +1195,12 @@ function showError(title, detail) {
 
 /* Quality warnings: things that are probably wrong but were not blocked. Each names a
    cue, and the remedy - variations - already exists on every cue card. */
-function showWarnings(list) {
+// `before` is whatever paintBanner has already composed - the preview warning, most of
+// all. This writes the host outright, so without it the warnings banner erased it.
+function showWarnings(list, before = '') {
   if (!list.length) return;
   const rows = list.map(w => `<li>${escapeHtml(w)}</li>`).join('');
-  $('#projBanner').innerHTML = `<div class="banner warn">
+  $('#projBanner').innerHTML = before + `<div class="banner warn">
       <strong>Rendered, with ${list.length === 1 ? 'one warning' : list.length + ' warnings'}</strong>
       <ul style="margin:7px 0 0 18px; padding:0">${rows}</ul>
       <div class="tiny muted" style="margin-top:7px">Open a named cue and use
@@ -1993,9 +2069,20 @@ function cueCard(cue, kind) {
     return b;
   };
   const seek = mk('seek', 'jump the player here', () => { $('#player').currentTime = at; });
-  const play = mk('stem', 'hear this cue on its own',
-    () => new Audio(`/media/${proj.name}/stem/${cue.id}`).play());
-  play.disabled = !proj.stems.includes(cue.id);
+  /* Whichever tree the player is on. A preview-only render puts every stem under
+     preview/stems, so keying this on proj.stems alone disabled the button on every cue in
+     the one mode that exists to let you hear cues without the models installed.
+     One element, so a second press replaces the first rather than layering tones. */
+  const onPreview = viewPreview && proj.has_preview;
+  const stemUrl = `/media/${proj.name}/${onPreview ? 'preview-stem' : 'stem'}/${cue.id}`;
+  const play = mk('stem', onPreview ? 'hear this cue on its own (placeholder tone)'
+                                    : 'hear this cue on its own',
+    () => {
+      if (stemAudio) stemAudio.pause();
+      stemAudio = new Audio(stemUrl);
+      stemAudio.play().catch(() => say('that stem is no longer on disk - render again', 'danger'));
+    });
+  play.disabled = !(onPreview ? (proj.preview_stems || []) : proj.stems).includes(cue.id);
   const reroll = mk('re-roll', 'new seed: regenerates only this cue on the next render', () => {
     cue.seed = Math.floor(Math.random() * 100000); markDirty();
   });

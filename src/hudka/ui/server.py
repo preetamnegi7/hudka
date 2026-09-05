@@ -130,6 +130,11 @@ def create_app(workspace: Path) -> FastAPI:
             # render does not touch preview.mp4, so keying the finished video on the
             # preview's timestamp hands back a stale URL after every re-render.
             "rendered_at": final_file.stat().st_mtime if final_file.exists() else None,
+            # So the page can say when a preview predates the cue sheet it stands for. An
+            # mtime rather than a content hash: saving an unchanged sheet bumps it, which
+            # errs toward warning rather than toward hiding a stale preview.
+            "cues_at": ((project / "cues.json").stat().st_mtime
+                        if (project / "cues.json").exists() else None),
             "busy": bool(active),
             "job": active.as_dict() if active else None,
             "duration": video.get("duration", 0),
@@ -144,9 +149,29 @@ def create_app(workspace: Path) -> FastAPI:
             "missing_source": source is None,
         }
 
-    def stem_index(project: Path) -> dict[str, Path]:
-        """Map cue id to its stem file. Names are `<cue id>_<content hash>.wav`."""
-        return {wav.stem.rsplit("_", 1)[0]: wav for wav in (project / "stems").rglob("*.wav")}
+    def stem_index(project: Path, preview: bool = False) -> dict[str, Path]:
+        """Map cue id to its stem file. Names are `<cue id>_<content hash>.wav`.
+
+        A preview's stems live in preview/stems and never in stems/ - render.render keeps
+        the trees apart on purpose. Globbing only the real tree left every "stem" button
+        disabled after a preview-only render, which is exactly the run where hearing one
+        cue on its own is the whole point.
+
+        The two are never merged: a mixture would play real audio for some cues and a
+        metronome blip for others, with nothing on screen saying which is which.
+
+        A concurrent render unlinks stems while this globs them (generate_stems), so a
+        file that vanishes underneath is skipped rather than raising - /api/project has to
+        stay openable while a render runs.
+        """
+        root = project / render_mod.PREVIEW_DIR if preview else project
+        out: dict[str, Path] = {}
+        for wav in (root / "stems").rglob("*.wav"):
+            try:
+                out[wav.stem.rsplit("_", 1)[0]] = wav
+            except OSError:  # pragma: no cover - a race with the renderer's cleanup
+                continue
+        return out
 
     # ------------------------------------------------------------------ page
 
@@ -452,8 +477,18 @@ def create_app(workspace: Path) -> FastAPI:
                 d.name: sorted(int(f.stem) for f in d.glob("*.wav") if f.stem.isdigit())
                 for d in (project / "takes").iterdir()
             } if (project / "takes").is_dir() else {},
+            # Kept a sorted LIST: the cue card does proj.stems.includes(...), and a dict
+            # here would silently disable every stem button instead of failing loudly.
             "stems": sorted(stem_index(project)),
+            "preview_stems": sorted(stem_index(project, preview=True)),
             "report": read_json(project / "render_report.json") or None,
+            # A preview writes its report and its ledger inside preview/, so these are
+            # different files. Without them the Output tab describes the last real render
+            # while the player is playing placeholder tones.
+            "preview_report": read_json(
+                project / render_mod.PREVIEW_DIR / "render_report.json") or None,
+            "preview_provenance": read_json(
+                project / render_mod.PREVIEW_DIR / "provenance.json").get("records", []),
             "provenance": read_json(project / "provenance.json").get("records", []),
             "job": active.as_dict() if active else None,
         })
@@ -511,6 +546,33 @@ def create_app(workspace: Path) -> FastAPI:
         if not target.is_file() or contact_dir not in target.parents:
             raise HTTPException(status_code=404, detail="no such contact sheet")
         return FileResponse(target, media_type="image/jpeg")
+
+    @app.get("/media/{name}/preview-stem/{cue_id}")
+    def media_preview_stem(name: str, cue_id: str) -> FileResponse:
+        """A placeholder stem from preview/stems. Separate from /stem/ so the page can
+        never play a real stem while it is showing a preview, or the reverse."""
+        stem = stem_index(project_dir(name), preview=True).get(cue_id)
+        if stem is None:
+            raise HTTPException(status_code=404, detail=f"no preview stem for {cue_id}")
+        return FileResponse(stem, media_type="audio/wav")
+
+    @app.delete("/api/project/{name}/preview")
+    def api_delete_preview(name: str) -> JSONResponse:
+        """Throw a preview away. It re-muxes the whole source picture, so it is roughly
+        source-sized, and nothing else ever prunes it."""
+        shutil.rmtree(project_dir(name) / render_mod.PREVIEW_DIR, ignore_errors=True)
+        return JSONResponse({"ok": True})
+
+    @app.get("/download/{name}/preview-licence")
+    def download_preview_licence(name: str) -> FileResponse:
+        """The preview's own licence report. provenance.py already stamps
+        'PREVIEW - placeholder audio, not for use' into it; handing out the real one while
+        a preview is on screen asserts a licence for audio nobody generated."""
+        report = project_dir(name) / render_mod.PREVIEW_DIR / "LICENSE-REPORT.md"
+        if not report.exists():
+            raise HTTPException(status_code=404, detail="no preview rendered")
+        return FileResponse(report, media_type="text/markdown",
+                            filename=f"{name}-PREVIEW-LICENSE-REPORT.md")
 
     @app.get("/download/{name}/video")
     def download_video(name: str) -> FileResponse:
