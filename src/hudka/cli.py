@@ -239,8 +239,10 @@ def licences_cmd() -> None:
         table.add_row(engine_id, lic.name, mark, conditions)
 
     console.print(table)
-    console.print("\n[dim]Default stack is Stable Audio 3 + ACE-Step: both are safe for "
-                  "worldwide distribution\nand for offering the capability to others. "
+    console.print("\n[dim]Default stack is Stable Audio 3: the small models everywhere, "
+                  "medium for beds where\nthe GPU has room for it (`hudka doctor` shows "
+                  "which). Safe for worldwide distribution\nand for offering the capability "
+                  "to others. ACE-Step is optional and has not been run here.\n"
                   "mmaudio is listed only to document why it is not used.[/]")
 
 

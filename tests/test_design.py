@@ -281,6 +281,55 @@ class TestMusicVariety:
                 assert len(pool) > 1, "one candidate is how this became one bed for everyone"
 
 
+class TestBedEngineFollowsTheMachine:
+    """The bed engine used to be gated on TOTAL VRAM >= 16 GB, which a 12.9 GB card can
+    never satisfy however much of it is free. It follows the free figure now."""
+
+    @staticmethod
+    def _hw(**kw):
+        from hudka.engines import hardware
+
+        base = dict(device="cuda", gpu_name="RTX 4070", total_vram_gb=12.9,
+                    free_vram_gb=8.0, bf16=True, ram_gb=64.0, cores=24)
+        base.update(kw)
+        return hardware.Hardware(**base)
+
+    def test_medium_when_it_fits_the_free_vram(self):
+        from hudka import engines
+
+        assert engines.pick_bed_engine(60.0, self._hw()) == "stable-audio-3-medium"
+
+    def test_a_bed_too_long_for_the_free_vram_falls_back(self):
+        from hudka import engines
+
+        # 8 GB free fits a 120 s medium bed but not the activations of a 380 s one.
+        assert engines.pick_bed_engine(380.0, self._hw()) == "stable-audio-3-small-music"
+        assert engines.pick_bed_engine(380.0, self._hw(free_vram_gb=20.0)) == "stable-audio-3-medium"
+
+    def test_a_busy_card_stays_small_whatever_its_total(self):
+        from hudka import engines
+
+        assert engines.pick_bed_engine(60.0, self._hw(free_vram_gb=5.0)) == "stable-audio-3-small-music"
+
+    def test_cpu_stays_small(self):
+        from hudka import engines
+
+        assert engines.pick_bed_engine(200.0, self._hw(device="cpu")) == "stable-audio-3-small-music"
+
+    def test_scaffold_loops_only_when_the_chosen_model_cannot_cover_the_range(self, monkeypatch):
+        from hudka.engines import hardware
+
+        long_clip = analysis(duration=200.0, speech=[(0, 190)])
+        monkeypatch.setattr(hardware, "detect", lambda refresh=False: self._hw())
+        on_gpu = design.scaffold(long_clip).music[0]
+        assert on_gpu.engine == "stable-audio-3-medium" and on_gpu.loop is False, \
+            "medium covers 380 s; looping it would put a seam in a bed generated whole"
+
+        monkeypatch.setattr(hardware, "detect", lambda refresh=False: self._hw(device="cpu"))
+        on_cpu = design.scaffold(long_clip).music[0]
+        assert on_cpu.engine == "stable-audio-3-small-music" and on_cpu.loop is True
+
+
 class TestHardwareAdaptation:
     """The tool has to be usable without an NVIDIA GPU, not merely runnable.
 

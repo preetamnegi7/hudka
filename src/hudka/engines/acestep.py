@@ -37,10 +37,9 @@ class AceStepEngine(Engine):
             from acestep.pipeline import ACEStepPipeline
         except ImportError as exc:  # pragma: no cover - depends on optional extra
             raise RuntimeError(
-                "ACE-Step is not installed.
-"
+                "ACE-Step is not installed.\n"
                 '  uv pip install "acestep @ '
-                'git+https://github.com/ACE-Step/ACE-Step-1.5"' 
+                'git+https://github.com/ACE-Step/ACE-Step-1.5"'
             ) from exc
 
         kwargs = {"dtype": "bfloat16"}
@@ -56,8 +55,7 @@ class AceStepEngine(Engine):
             import acestep  # noqa: F401
         except ImportError as exc:  # pragma: no cover - depends on the optional install
             raise RuntimeError(
-                "ACE-Step is not installed.
-"
+                "ACE-Step is not installed.\n"
                 '  uv pip install "acestep @ '
                 'git+https://github.com/ACE-Step/ACE-Step-1.5"'
             ) from exc

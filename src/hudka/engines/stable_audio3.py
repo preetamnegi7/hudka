@@ -2,11 +2,13 @@
 
 Chosen as the default because it is the only current option that clears every constraint
 at once: trained entirely on licensed data, outputs are owned by the user and freely
-commercialisable under $1M revenue, no territorial carve-out, and it fits in 12GB of VRAM
-(Medium peaks at 5.07-6.52GB for 5s-380s).
+commercialisable under $1M revenue, no territorial carve-out, and it fits a 12GB card -
+IF it is loaded in the right order. The library moves the 9.2 GB float32 checkpoint onto
+the GPU and only then halves it; `_load` below casts first, so medium settles at 4.6 GB of
+weights and Stability's published 5.07-6.52GB peak for 5s-380s of generation.
 
 Variants:
-    medium       1.4B, up to 380s, CUDA  - music beds and long ambience
+    medium       2.3B (1.45B DiT + 0.85B VAE), up to 380s, CUDA - beds of any length
     small-sfx    433M, up to 120s        - one-shot effects, fast iteration
     small-music  433M, up to 120s        - short music beds
 """
@@ -72,14 +74,16 @@ class StableAudio3Engine(Engine):
     licence: Licence = STABILITY_COMMUNITY
 
     def __init__(self, engine_id: str, device: str | None = None,
-                 model_dir: Path | None = None, steps: int = DEFAULT_STEPS):
+                 model_dir: Path | None = None, steps: int | None = None):
         if engine_id not in _VARIANTS:
             raise ValueError(f"unknown Stable Audio 3 variant: {engine_id}")
         self.id = engine_id
         self.variant, self.max_duration, self.kinds = _VARIANTS[engine_id]
         self.device = device
         self.model_dir = model_dir
-        self.steps = steps if steps != DEFAULT_STEPS else _STEPS_BY_VARIANT[self.variant]
+        #: None means the variant's own default. It used to be `steps: int = 8`, which
+        #: made an explicit 8 indistinguishable from "unset" and silently promoted it to 50.
+        self.steps = _STEPS_BY_VARIANT[self.variant] if steps is None else steps
         self._model = None
 
     @staticmethod

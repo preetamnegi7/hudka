@@ -41,7 +41,10 @@ cue density, gain and ducking. Set `target_lufs`/`true_peak_db` from the preset.
 **Engines** — default to these; they are cleared for commercial use worldwide:
 
 - `stable-audio-3-small-sfx` — one-shots: impacts, whooshes, clicks, footsteps
-- `stable-audio-3-medium` — music beds and long ambience (up to 380s)
+- `stable-audio-3-small-music` — music beds up to 120s (set `loop: true` for longer ranges)
+- `stable-audio-3-medium` — beds up to 380s, **only** when `hudka doctor` reports tier
+  `gpu-medium` or `gpu-large` (about 7 GB of *free* VRAM). Otherwise the render swaps it
+  for the small model and says so. Leave `steps` unset; the machine's tier picks them.
 
 Never use `hunyuan-foley` or `mmaudio` unless the user explicitly asks. The first needs an
 opt-in flag (its licence excludes the EU/UK/South Korea); the second is non-commercial and

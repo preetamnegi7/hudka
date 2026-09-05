@@ -273,11 +273,16 @@ def scaffold(analysis: dict, *, preset: str | None = None,
     name = preset or suggest_preset(info, analysis)
     pre: Preset = presets.get(name)
 
+    from .engines import hardware
+
+    hw = hardware.detect()
     sfx_engine = engine or engine_registry.DEFAULT_ENGINES["sfx"]
-    bed_engine = engine or engine_registry.pick_bed_engine(info.duration)
-    # A bed longer than the chosen model can generate in one pass is looped with
-    # equal-power crossfades rather than truncated into silence.
-    bed_loops = info.duration > engine_registry.SMALL_MAX_SECONDS
+    bed_engine = engine or engine_registry.pick_bed_engine(info.duration, hw)
+    # A bed longer than the CHOSEN model can generate in one pass is looped with
+    # equal-power crossfades rather than truncated into silence. Medium covers 380 s, so a
+    # 200 s bed on it is generated whole - and `loop: false` keeps the "covers" QA check
+    # honest about what was asked for.
+    bed_loops = info.duration > engine_registry.max_seconds(bed_engine)
 
     shots = analysis.get("shots", [])
     minutes = max(info.duration / 60.0, 0.05)

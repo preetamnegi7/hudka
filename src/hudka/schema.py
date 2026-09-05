@@ -113,7 +113,10 @@ class BedCue(Shaping):
     start: Seconds
     end: Seconds
     prompt: str = Field(min_length=3)
-    engine: EngineId = "stable-audio-3-medium"
+    #: The worldwide-safe small model. The scaffold promotes a bed to medium only after
+    #: `engines.pick_bed_engine` has confirmed this machine has room to load it; a
+    #: hand-written sheet used to inherit medium here and die on a 12 GB card.
+    engine: EngineId = "stable-audio-3-small-music"
     gain_db: Gain = -18.0
     fade_in: Seconds = 0.5
     fade_out: Seconds = 1.5

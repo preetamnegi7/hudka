@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .base import Engine, GenerateRequest, Licence, LicenceError, require_usable
+from . import hardware
 from .licences import (
     CC_BY_NC,
     MIT,
@@ -27,11 +28,12 @@ __all__ = [
 
 #: Sensible default engine per cue kind — the worldwide-safe stack.
 #:
-#: The *small* variants are the defaults rather than `medium`, deliberately. Medium is
-#: 2B parameters shipped as an 8.6GB float32 checkpoint, and loading it on a 12GB card
-#: kills the process outright - no exception, no traceback, just gone. The small models
-#: peak around 2.3GB, cover up to 120s, and are what most short-form and explainer work
-#: needs anyway. `pick_bed_engine` promotes to medium only with both a reason and headroom.
+#: The *small* variants are the defaults rather than `medium`, deliberately: this is the
+#: row every machine can run, CPU included. Medium is 2.3B parameters (1.45B DiT + 0.85B
+#: VAE) shipped as a 9.2 GB float32 checkpoint; the library moves it onto the card BEFORE
+#: halving it, which is why loading it used to kill a 12 GB process with no traceback (see
+#: StableAudio3Engine._load for the fix). The small models peak around 2.3GB and cover up
+#: to 120s. `pick_bed_engine` promotes to medium only when this machine's free VRAM says so.
 DEFAULT_ENGINES = {
     "sfx": "stable-audio-3-small-sfx",
     "music": "stable-audio-3-small-music",
@@ -41,34 +43,37 @@ DEFAULT_ENGINES = {
 #: Longest bed the small models can produce; beyond this a bigger model would be needed.
 SMALL_MAX_SECONDS = 120.0
 
-#: Medium needs real headroom to load its float32 checkpoint without taking the process
-#: down. Measured against a 12.9GB card, where it does not survive.
-MEDIUM_MIN_VRAM_GB = 16.0
-
 
 def available_vram_gb() -> float:
-    """Total VRAM on the default CUDA device, or 0.0 when there is no GPU."""
-    try:
-        import torch
+    """FREE VRAM in GB, physically, from nvidia-smi - or 0.0 without a usable GPU.
 
-        if not torch.cuda.is_available():
-            return 0.0
-        return torch.cuda.get_device_properties(0).total_memory / 1e9
-    except Exception:
-        return 0.0
-
-
-def pick_bed_engine(duration: float) -> str:
-    """Engine for a music or ambience bed of this length.
-
-    Small by default; medium only for beds it cannot cover, and only on a card with the
-    headroom to load it. Otherwise the bed is looped to fill the range.
+    This used to return the card's TOTAL, which decides nothing: the development machine
+    is a 12.9 GB card with 7-8 GB free at rest, because the desktop holds the rest. See
+    `hardware` for why the free number must not come from torch on Windows.
     """
-    if duration <= SMALL_MAX_SECONDS:
-        return DEFAULT_ENGINES["music"]
-    if available_vram_gb() >= MEDIUM_MIN_VRAM_GB:
-        return "stable-audio-3-medium"
-    return DEFAULT_ENGINES["music"]
+    return hardware.detect().free_vram_gb
+
+
+def max_seconds(engine_id: str) -> float:
+    """Longest single-pass generation for an engine id (120 s small, 380 s medium)."""
+    from .stable_audio3 import _VARIANTS
+
+    return _VARIANTS[engine_id][1] if engine_id in _VARIANTS else SMALL_MAX_SECONDS
+
+
+def pick_bed_engine(duration: float, hw: "hardware.Hardware | None" = None,
+                    kind: str = "music") -> str:
+    """Engine for a music or ambience bed of this length, on this machine.
+
+    Medium whenever the tier allows it AND the VRAM free right now covers a bed this long;
+    otherwise the small model, which the scaffold loops past 120 s. The check is against
+    FREE memory: a 12.9 GB card with a browser holding 5 GB is a 7.9 GB card.
+    """
+    hw = hw or hardware.detect()
+    if (hardware.engine_for(kind, hw.tier) == hardware.MEDIUM
+            and hardware.medium_fits(min(duration, max_seconds(hardware.MEDIUM)), hw)):
+        return hardware.MEDIUM
+    return DEFAULT_ENGINES[kind]
 
 
 #: Every engine id and its licence, including the one deliberately excluded, so
