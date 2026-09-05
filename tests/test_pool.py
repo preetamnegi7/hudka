@@ -89,6 +89,26 @@ class TestResidency:
         assert fresh_pool.status() == []
 
 
+class TestPressure:
+    def test_an_idle_worker_is_retired_when_the_desktop_needs_the_card(self, tmp_path):
+        """The keep rule runs when a job ends; the desktop keeps moving afterwards. Seen on
+        the development machine: 2.4 GB free after a render, 0.3 GB minutes later with a
+        worker still resident. The reaper must hand the card back under pressure."""
+        free = {"gb": 5.0}
+        pool = pool_mod.WorkerPool(idle_seconds=600.0, free_vram=lambda: free["gb"], reap_every=0.1)
+        try:
+            pool.run("silence", [cue(tmp_path / "a.wav")], None, lambda _: None)
+            proc = pool.get("silence", None).proc
+            time.sleep(0.4)
+            assert proc.poll() is None, "plenty free: it stays"
+            free["gb"] = 0.4                     # a game or an editor just took the card
+            assert wait_until(lambda: proc.poll() is not None, timeout=10.0), \
+                "the reaper did not give the card back"
+            assert pool.status() == []
+        finally:
+            pool.shutdown()
+
+
 class TestCrashes:
     def test_a_worker_that_died_between_jobs_is_diagnosed_and_replaced(self, fresh_pool, tmp_path):
         log: list[str] = []

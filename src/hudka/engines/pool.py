@@ -510,10 +510,23 @@ class WorkerPool:
                 time.sleep(self._reap_every)
                 now = time.monotonic()
                 with self._lock:
-                    stale = [w for w in self._workers.values()
-                             if not w.busy and now - w.last_used > self.idle_seconds]
+                    idle = [w for w in self._workers.values() if not w.busy]
+                    stale = [w for w in idle if now - w.last_used > self.idle_seconds]
                 for worker in stale:
                     self._retire(worker)
+                # Pressure, not just time: the keep rule ran when the job ended, but the
+                # desktop keeps moving. Measured here: 2.4 GB free after a render became
+                # 0.3 GB minutes later with a worker still resident. Give the card back,
+                # least recently used first, until the margin is restored.
+                remaining = [w for w in idle if w not in stale and w.alive()]
+                if remaining:
+                    free = self._free_vram()
+                    if free is not None and free < KEEP_MARGIN_GB:
+                        for worker in sorted(remaining, key=lambda w: w.last_used):
+                            self._retire(worker)
+                            free += float(worker.idle_gb or peak_of(worker.engine_id))
+                            if free >= KEEP_MARGIN_GB:
+                                break
 
         self._reaper = threading.Thread(target=reap, daemon=True, name="hudka-worker-reaper")
         self._reaper.start()

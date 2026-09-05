@@ -95,3 +95,26 @@ verdict; the two 30 s files were handed to the user for a listening comparison. 
   which is post-trained for exactly them. `auto` keeps small-sfx until this is listened to.
 - fp16 vs bf16 for the DiT/VAE, and the bf16 text-encoder cast's audibility.
 - `medium-base` / `small-*-base` (the non-distilled checkpoints) at 50–100 steps.
+
+## Resident workers (2026-09-05)
+
+`scratchpad/live_pool.py`: two generate-only passes through `engines/pool.py` on the real
+`stable-audio-3-small-sfx` engine, scratch cue sheet, 9.0 GB free at start.
+
+| pass | wall | of which load | note |
+|---|---|---|---|
+| first (2 cues) | **37.8 s** | 29.8 s | fresh process: weights + torch.compile warm-up |
+| second (1 new cue) | **0.9 s** | 0.0 s | worker resident; the cue itself took 0.75 s |
+
+The worker held 1.81 GB while idle and was gone the moment the parent process exited
+(`pid_alive` False after `os._exit`) - the Job Object / parent-watchdog path, not the
+polite shutdown.
+
+What this settles: the per-render overhead was the load and the warm-up, not the cues.
+With a worker resident a re-render that regenerates one effect costs about a second of
+generation instead of thirty-plus. The 12–16 s "engine swap" seen from stem mtimes earlier
+was one such load.
+
+Not yet measured: the first pass here was 29.8 s of load for the *small* model, against
+10.8 s in B1 - a cold disk cache and 5 GB of desktop on the card are the likely difference.
+Worth a repeat with `nvidia-smi -lms 500` alongside once the machine is quiet.
