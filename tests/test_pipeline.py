@@ -717,3 +717,59 @@ class TestBedLoopSeam:
         levels = [np.sqrt((looped[i:i + win, 0] ** 2).mean())
                   for i in range(int(4.5 * SAMPLE_RATE), int(7.5 * SAMPLE_RATE), win)]
         assert min(levels) > 0.7 * max(levels), "seam dipped audibly"
+
+
+class TestMutedCues:
+    """Mute leaves a cue out of the mix without losing it.
+
+    It is a placement decision, so it stays out of the cache key: the stem is still
+    generated and still recorded in the ledger, which keeps provenance truthful and makes
+    unmuting free.
+    """
+
+    def test_a_muted_effect_is_not_in_the_mix_but_is_still_generated(self, fixture_video, tmp_path):
+        from hudka.audio import peak_dbfs
+
+        info = analyze_mod.probe(fixture_video)
+        sheet = sheet_for(info)
+        sheet.sfx[0].muted = True
+
+        result = render.render(sheet, tmp_path)
+        assert result.stems["hit1"].exists(), "a muted cue must still be generated"
+
+        records = json.loads(result.provenance.read_text(encoding="utf-8"))["records"]
+        assert any(r["cue_id"] == "hit1" for r in records), \
+            "a muted cue must stay in the ledger - its stem is on disk"
+
+        bus, _ = read_wav(tmp_path / "buses" / "sfx.wav")
+        loud = np.flatnonzero(np.abs(bus).mean(axis=1) > 0.01) / SAMPLE_RATE
+        assert not any(abs(t - 4.0) < 0.3 for t in loud), "the muted cue was placed anyway"
+        assert any(abs(t - 8.0) < 0.3 for t in loud), "the unmuted cue should still be there"
+
+    def test_muting_does_not_change_the_cache_key(self):
+        from hudka.engines.base import GenerateRequest
+
+        a = GenerateRequest(prompt="a click", duration=2.0, seed=1)
+        b = GenerateRequest(prompt="a click", duration=2.0, seed=1)
+        assert a.cache_key("silence") == b.cache_key("silence")
+
+    def test_muting_every_effect_does_not_block_the_render(self, fixture_video, tmp_path):
+        """Otherwise the quality gate's 'no effect landed' fires on a deliberate choice."""
+        info = analyze_mod.probe(fixture_video)
+        sheet = sheet_for(info)
+        for cue in sheet.sfx:
+            cue.muted = True
+
+        result = render.render(sheet, tmp_path)
+        assert result.verdict in ("ok", "warn")
+        assert not any("no effect landed" in p for p in result.quality.problems())
+
+    def test_a_muted_bed_leaves_no_music(self, fixture_video, tmp_path):
+        from hudka.audio import peak_dbfs
+
+        info = analyze_mod.probe(fixture_video)
+        sheet = sheet_for(info)
+        sheet.music[0].muted = True
+        render.render(sheet, tmp_path)
+        bus, _ = read_wav(tmp_path / "buses" / "music.wav")
+        assert peak_dbfs(bus) < -60.0

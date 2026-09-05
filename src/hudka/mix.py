@@ -140,6 +140,8 @@ def place_sfx(cues: list[SfxCue], stems: dict[str, Path], total: float, *,
     bus = np.zeros((int(round(total * SAMPLE_RATE)), 2), dtype=np.float32)
 
     for cue in cues:
+        if cue.muted:
+            continue
         samples, _ = read_wav(stems[cue.id])
         clip = to_stereo(samples)
         clip = clip - clip.mean(axis=0)   # a DC offset is a thump at every fade edge
@@ -172,6 +174,8 @@ def place_beds(beds: list[BedCue], stems: dict[str, Path], total: float, *,
     bus = np.zeros((int(round(total * SAMPLE_RATE)), 2), dtype=np.float32)
 
     for bed in beds:
+        if bed.muted:
+            continue
         source = stems[bed.id]
         samples, _ = read_wav(source)
         clip = to_stereo(samples)

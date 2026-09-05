@@ -328,7 +328,7 @@ def render(
         mix_lufs=lufs,
         mix_flatness=qa.spectral_flatness(mix_samples),
         sfx_events=report.sfx_events if report else None,
-        sfx_cues=len(sheet.sfx),
+        sfx_cues=len([c for c in sheet.sfx if not c.muted]),
         balance_problems=report.problems() if report else [],
     )
     if quality.problems():

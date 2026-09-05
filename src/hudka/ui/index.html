@@ -976,7 +976,7 @@ function paintTimeline() {
 
 function clipEl(cue, kind, background, x, shape) {
   const el = document.createElement('div');
-  el.className = `tl-clip ${shape}${cue.id === selectedCue ? ' sel' : ''}${cue.mute ? ' muted' : ''}`;
+  el.className = `tl-clip ${shape}${cue.id === selectedCue ? ' sel' : ''}${cue.muted ? ' muted' : ''}`;
   el.style.left = `${x(cueTime(cue))}px`;
   el.style.width = `${Math.max(x(cueLen(cue)), 3)}px`;
   el.style.background = background;

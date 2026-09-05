@@ -75,6 +75,9 @@ class Shaping(BaseModel):
     pitch_semitones: Annotated[float, Field(ge=-24.0, le=24.0)] = 0.0
     #: Play it backwards, turning a decay into a swell.
     reverse: bool = False
+    #: Left out of the mix, but still generated and still recorded in the ledger - so
+    #: unmuting costs nothing and the provenance report stays truthful either way.
+    muted: bool = False
 
 
 class SfxCue(Shaping):
