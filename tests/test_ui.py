@@ -596,6 +596,45 @@ class TestLiveMix:
         assert "REF_SFX_RMS_CEILING_DBFS = -26.0" in page
         assert "Math.min(REF_SFX_PEAK_DBFS - peak, REF_SFX_RMS_CEILING_DBFS - rms)" in page
 
+    def test_you_can_hear_a_cue_sheet_without_rendering_it(self, client, fixture_video):
+        """Generation is the slow part that answers "does this sound right". Placing,
+        mixing, mastering to a loudness target and re-muxing a 4K video are not - and they
+        were the price of admission before you were allowed to hear anything.
+
+        Its own project, not the shared fixture: that one is already rendered, and the
+        whole point here is the state where nothing has been.
+        """
+        name = client.post("/api/import/path", json={"path": str(fixture_video)}).json()["name"]
+        wait_for(client, client.post(f"/api/project/{name}/analyze").json()["id"])
+        client.post(f"/api/project/{name}/scaffold",
+                    json={"preset": "short-form", "engine": "silence"})
+
+        before = client.get(f"/api/project/{name}").json()
+        assert before["stage"] == "designed"
+        assert before["stems"] == [], "nothing to listen to yet"
+
+        job = wait_for(client, client.post(f"/api/project/{name}/generate", json={}).json()["id"])
+        assert job["status"] == "done", job.get("error")
+        assert job["result"]["generated"] > 0
+
+        after = client.get(f"/api/project/{name}").json()
+        assert after["stems"], "the stems the live mix plays"
+        assert after["stem_info"], "and the levels it needs to place them at"
+        assert after["stage"] == "designed", "generating is not rendering"
+        assert client.get(f"/media/{name}/video").status_code == 404, "no video was made"
+        assert client.get(f"/media/{name}/stem/{after['stems'][0]}").status_code == 200
+
+        # Rendering afterwards must reuse every one of them, or this cost the user twice.
+        rendered = wait_for(client, client.post(f"/api/project/{name}/render", json={}).json()["id"])
+        assert rendered["result"]["generated"] == 0
+        assert rendered["result"]["cached"] == len(after["stems"])
+
+    def test_generating_offers_itself_when_there_is_nothing_to_hear(self):
+        page = self._page()
+        assert "function cuesNeedingStems()" in page
+        assert "'Generate & listen'" in page
+        assert "/generate`" in page
+
     def test_the_server_serves_what_the_graph_needs(self, client, project):
         wait_for(client, client.post(f"/api/project/{project}/render", json={}).json()["id"])
         data = client.get(f"/api/project/{project}").json()

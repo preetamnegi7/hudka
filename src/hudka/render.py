@@ -495,6 +495,52 @@ def take_seeds(base_seed: int, count: int) -> list[int]:
     return [(base_seed + (i + 1) * TAKE_SEED_STRIDE) % 2_147_483_647 for i in range(count)]
 
 
+def generate_only(
+    sheet: CueSheet,
+    out_dir: Path,
+    *,
+    allow_noncommercial: bool = False,
+    opted_in: Iterable[str] = (),
+    device: str | None = None,
+    progress: Progress | None = None,
+) -> dict:
+    """Generate every cue's audio and stop. No placement, no mix, no master, no mux.
+
+    Generation is the slow part that actually answers "does this sound right". Placing,
+    mixing, mastering to a loudness target and re-muxing a 4K video are not, and on a
+    long clip they cost as much again as the sounds themselves - paid every time, before
+    you are allowed to hear anything.
+
+    The browser plays these stems directly and applies gain, pan, mute and solo as live
+    gain nodes, so this is paid once per cue and every adjustment after it is free.
+
+    No provenance.json is written: nothing is delivered here, and the ledger belongs to
+    the render that produces a file you could hand to someone. The licence gate is
+    unaffected - it lives inside generate_stems and runs before any weights load.
+    """
+    say = progress or (lambda _: None)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ledger = Ledger(video=str(Path(sheet.video.path)))
+    stems, qualities = generate_stems(
+        sheet, out_dir, ledger,
+        allow_noncommercial=allow_noncommercial, opted_in=opted_in,
+        device=device, progress=progress,
+    )
+
+    warnings = [w for q in qualities for w in q.warnings()]
+    for warning in warnings:
+        say(f"  {warning}")
+    say(f"{len(stems)} sound(s) ready to hear - no mix, no master, no video")
+    return {
+        "stems": sorted(stems),
+        "generated": sum(1 for r in ledger.records if not r.cached),
+        "cached": sum(1 for r in ledger.records if r.cached),
+        "warnings": warnings,
+    }
+
+
 def generate_variations(
     sheet: CueSheet,
     out_dir: Path,

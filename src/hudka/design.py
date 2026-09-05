@@ -14,6 +14,9 @@ distribution when they do not.
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass
+
 import numpy as np
 
 from . import presets
@@ -27,6 +30,142 @@ MIN_GAP_SECONDS = 2.0
 MOTION_FLOOR = 0.0025
 #: Speech coverage above which the design drops to the preset's minimum effect density.
 HEAVY_NARRATION = 0.9
+
+
+#: Speech coverage above which the bed has to sit under a voice rather than carry the
+#: clip: no lead melody, steady dynamics, and room left in the centre.
+BED_NARRATION = 0.45
+
+
+@dataclass(frozen=True)
+class BedTemplate:
+    """One candidate underscore.
+
+    Naming tempo, key, instrumentation and register gives the model something to build on;
+    "calm pad, unobtrusive" gives it almost nothing, which is what "very basic" sounded
+    like. Every prompt keeps a wide stereo image and an airy top end so the bed stays
+    clear of centre-panned speech - a darker, more mono bed competes with the voice
+    instead of sitting under it.
+    """
+
+    mood: str
+    #: Written to sit under a voiceover: no lead melody, steady dynamics.
+    narration: bool
+    pace: str          # "slow" | "medium" | "fast"
+    prompt: str
+
+
+MUSIC_BEDS: tuple[BedTemplate, ...] = (
+    BedTemplate("warm rhodes", True, "slow",
+        "warm instrumental underscore at 72 BPM in A minor, soft Rhodes electric piano on "
+        "a slow four-chord loop, sustained analog pad, light shaker and soft rim click, "
+        "gentle upright bass on the root, wide stereo image, airy top end, no vocals, "
+        "no lead melody, steady dynamics, sits under a voiceover"),
+    BedTemplate("felt piano", True, "slow",
+        "calm instrumental underscore at 68 BPM in D minor, felt piano with soft hammers, "
+        "warm tape pad underneath, brushed snare pulse, low sine bass, wide stereo image, "
+        "airy top end, no vocals, no lead melody, very steady dynamics, sits under a voiceover"),
+    BedTemplate("muted keys", True, "medium",
+        "warm instrumental underscore at 84 BPM in F major, muted electric piano on a "
+        "four-chord loop, sustained pad, soft shaker and light rim click, round bass on "
+        "the root, wide stereo image, airy top end, no vocals, no lead melody, steady "
+        "dynamics, sits under a voiceover"),
+    BedTemplate("marimba pulse", True, "medium",
+        "clean instrumental underscore at 90 BPM in C minor, short marimba pulse, soft "
+        "analog pad, closed hi-hat and light kick, simple sub bass, wide stereo image, "
+        "airy top end, no vocals, no lead melody, steady dynamics, sits under a voiceover"),
+    BedTemplate("driving guitar", True, "fast",
+        "driving instrumental underscore at 104 BPM in G minor, muted guitar arpeggio, "
+        "tight analog pad, soft kick and closed hi-hat, steady eighth-note bass, wide "
+        "stereo image, airy top end, no vocals, no lead melody, steady dynamics, sits "
+        "under a voiceover"),
+    BedTemplate("plucked pulse", True, "fast",
+        "energetic instrumental underscore at 112 BPM in E minor, plucked synth pulse on "
+        "a two-bar loop, warm pad, light kick and shaker, steady bass, wide stereo image, "
+        "airy top end, no vocals, no lead melody, steady dynamics, sits under a voiceover"),
+    BedTemplate("slow strings", False, "slow",
+        "cinematic instrumental bed at 64 BPM in C minor, sustained strings, low drone, "
+        "sparse piano notes, soft timpani pulse, wide stereo image, airy top end, "
+        "no vocals, slow swells"),
+    BedTemplate("mallets and pad", False, "slow",
+        "warm instrumental bed at 70 BPM in D minor, felt piano, slow string pad swell, "
+        "soft mallet accents, deep round bass, wide stereo image, airy top end, no vocals, "
+        "gentle dynamics"),
+    BedTemplate("clean keys", False, "medium",
+        "warm instrumental bed at 95 BPM in A minor, clean electric piano, muted guitar "
+        "arpeggio, soft kick and shaker, gentle bass, wide stereo image, airy top end, "
+        "no vocals, steady dynamics"),
+    BedTemplate("dusty loop", False, "medium",
+        "relaxed instrumental bed at 88 BPM in E minor, lo-fi electric piano with light "
+        "wow and flutter, dusty drum loop, warm sub bass, soft vinyl noise, wide stereo "
+        "image, airy top end, no vocals"),
+    BedTemplate("bright plucks", False, "fast",
+        "upbeat instrumental bed at 118 BPM in G major, bright plucked synth, muted guitar "
+        "chops, punchy kick and clap, driving bass, wide stereo image, airy top end, "
+        "no vocals, steady dynamics"),
+    BedTemplate("arp drive", False, "fast",
+        "energetic instrumental bed at 126 BPM in F minor, arpeggiated synth, filtered pad "
+        "sweep, four-on-the-floor kick and hats, rolling bass, wide stereo image, airy top "
+        "end, no vocals"),
+)
+
+
+def _motion_energy(analysis: dict) -> float:
+    """The clip's 90th-percentile motion, in the same units as MOTION_FLOOR.
+
+    The median is useless here - a screen recording sits at almost zero for most of its
+    length - but the p90 separates a still talking-head from a busy edit by two orders of
+    magnitude on real footage.
+    """
+    curve = analysis.get("motion_curve") or []
+    values = [float(p[1]) for p in curve if isinstance(p, (list, tuple)) and len(p) > 1]
+    if not values:
+        return 0.0
+    return float(np.percentile(np.asarray(values, dtype=np.float64), 90))
+
+
+def bed_pace(analysis: dict, duration: float) -> str:
+    """How busy the picture is, as one of three words the bed library is keyed on."""
+    minutes = max(duration / 60.0, 0.05)
+    cuts_per_minute = len(analysis.get("shots") or []) / minutes
+    energy = _motion_energy(analysis)
+    if cuts_per_minute >= 10.0 or energy >= 8 * MOTION_FLOOR:
+        return "fast"
+    if cuts_per_minute <= 3.0 and energy < MOTION_FLOOR:
+        return "slow"
+    return "medium"
+
+
+def pick_bed(info: VideoInfo, analysis: dict, coverage: float) -> tuple[BedTemplate, int]:
+    """Choose an underscore, and a seed, that differ from project to project.
+
+    Both used to be constants: one of two prompt strings picked by a single boolean, and
+    `seed=7`. Prompt, seed and engine are the whole cache key, so every video of the same
+    length got byte-identical music and every video whatever its length got the same key,
+    tempo and instruments. Three real projects on this machine had the same prompt hash
+    and the same seed.
+
+    The choice is a hash of the source path and the clip's own shape, so it is stable -
+    re-scaffolding the same video gives the same bed - while two projects differ even when
+    they come from the same file. The seed lands in cues.json either way, so a render
+    stays reproducible from the sheet alone.
+    """
+    pace = bed_pace(analysis, info.duration)
+    narration = coverage > BED_NARRATION
+    pool = [b for b in MUSIC_BEDS if b.narration is narration and b.pace == pace]
+    if not pool:  # pragma: no cover - every (narration, pace) pair is populated
+        pool = [b for b in MUSIC_BEDS if b.narration is narration]
+
+    signature = "\x1f".join([
+        str(info.path), f"{info.duration:.2f}",
+        str(len(analysis.get("shots") or [])), f"{coverage:.3f}",
+    ])
+    digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()
+    chosen = pool[int(digest[:8], 16) % len(pool)]
+    # Not `hash()`: it is salted per process, so the same video would pick a different
+    # bed on every run and re-scaffolding would silently replace the music.
+    seed = 1000 + int(digest[8:16], 16) % 90000
+    return chosen, seed
 
 
 def speech_coverage(analysis: dict, duration: float) -> float:
@@ -206,30 +345,17 @@ def scaffold(analysis: dict, *, preset: str | None = None,
 
     cues.sort(key=lambda c: c.at)
 
-    # Naming tempo, key, instrumentation and register gives the model something to build
-    # on; "calm pad, unobtrusive" gives it almost nothing, which is what "very basic"
-    # sounded like. "wide stereo image, airy top end" keeps the bed clear of centre-panned
-    # speech - a darker, more mono bed competes with the voice instead of sitting under it.
-    bed_prompt = (
-        "warm instrumental underscore at 82 BPM in A minor, soft Rhodes electric piano on "
-        "a slow four-chord loop, sustained analog pad, light shaker and soft rim click, "
-        "gentle upright bass on the root, wide stereo image, airy top end, no vocals, "
-        "no lead melody, steady dynamics, sits under a voiceover"
-        if coverage > 0.45 else
-        "warm instrumental bed at 95 BPM in A minor, clean electric piano, muted guitar "
-        "arpeggio, soft kick and shaker, gentle bass, wide stereo image, airy top end, "
-        "no vocals, steady dynamics"
-    )
+    bed, bed_seed = pick_bed(info, analysis, coverage)
 
     return CueSheet(
         version=CURRENT_VERSION,
         video=info, preset=pre.name, target_lufs=pre.target_lufs,
         true_peak_db=pre.true_peak_db, keep_original_audio=info.has_audio,
         music=[BedCue(
-            id="bed", start=0.0, end=round(info.duration, 3), prompt=bed_prompt,
+            id="bed", start=0.0, end=round(info.duration, 3), prompt=bed.prompt,
             engine=bed_engine, gain_db=pre.music_gain_db, fade_in=0.5,
-            fade_out=min(2.0, info.duration / 4), duck=True, loop=bed_loops, seed=7,
-            note="reword this to suit the footage",
+            fade_out=min(2.0, info.duration / 4), duck=True, loop=bed_loops, seed=bed_seed,
+            note=f"{bed.mood} - reword this to suit the footage, or re-roll for another take",
         )],
         sfx=cues,
     )

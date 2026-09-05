@@ -519,6 +519,29 @@ def create_app(workspace: Path) -> FastAPI:
 
         return JSONResponse(runner.submit("render", name, work).as_dict())
 
+    @app.post("/api/project/{name}/generate")
+    def api_generate(name: str, opts: RenderOptions) -> JSONResponse:
+        """Generate the sounds and stop, so they can be heard before any render."""
+        project = project_dir(name)
+        if runner.active_for(name):
+            raise HTTPException(status_code=409, detail="already working on this project")
+        if not (project / "cues.json").exists():
+            raise HTTPException(status_code=409, detail="there is no cue sheet yet")
+
+        sheet = CueSheet.load(project / "cues.json")
+
+        def work(say):
+            try:
+                return render_mod.generate_only(
+                    sheet, project, allow_noncommercial=opts.allow_noncommercial,
+                    opted_in=set(opts.opted_in), progress=say,
+                )
+            except LicenceError as exc:
+                # Verbatim: it tells the user exactly what to accept and where.
+                raise RuntimeError(str(exc)) from exc
+
+        return JSONResponse(runner.submit("generate", name, work).as_dict())
+
     @app.post("/api/project/{name}/variations")
     def api_variations(name: str, opts: VariationOptions) -> JSONResponse:
         """Render alternative takes of one cue, so the choice can be made by ear."""

@@ -15,9 +15,9 @@ from hudka.schema import VideoInfo
 
 
 def analysis(*, duration=48.0, width=3840, height=2160, shots=None, curve=None,
-             speech=None, has_audio=True):
+             speech=None, has_audio=True, path="x.mp4"):
     return {
-        "video": {"path": "x.mp4", "duration": duration, "fps": 60.0,
+        "video": {"path": path, "duration": duration, "fps": 60.0,
                   "width": width, "height": height, "has_audio": has_audio,
                   "has_dialogue": bool(speech)},
         "shots": shots if shots is not None else [
@@ -213,6 +213,72 @@ class TestPromptVariety:
         allowed = {pre.sfx_gain_db + trim for trim in presets.SFX_TRIM_DB.values()}
         for cue in sheet.sfx:
             assert cue.gain_db in allowed, f"{cue.id} gain {cue.gain_db} is not preset-derived"
+
+
+class TestMusicVariety:
+    """Every project used to get the same background music - not similar, the same.
+
+    The bed prompt was one of two fixed strings chosen by a single boolean and the seed
+    was hardcoded to 7. Prompt, seed and engine are the whole cache key, so two clips of
+    the same length produced byte-identical music, and every clip whatever its length got
+    the same key, tempo and instruments. Three real projects on this machine shared one
+    prompt hash and one seed.
+    """
+
+    @staticmethod
+    def _bed(**kwargs):
+        return design.scaffold(analysis(**kwargs)).music[0]
+
+    def test_two_projects_from_the_same_file_get_different_music(self):
+        """The case that made it obvious: one video imported twice, same footage, same
+        length - and Hudka wrote the same underscore into both."""
+        a = self._bed(path=r"out\one\source\clip.mp4", speech=[(0, 40)])
+        b = self._bed(path=r"out\two\source\clip.mp4", speech=[(0, 40)])
+        assert (a.prompt, a.seed) != (b.prompt, b.seed)
+
+    def test_the_same_project_always_gets_the_same_music(self):
+        """Re-scaffolding must not silently replace the music. The literal is the point:
+        Python's hash() is salted per process, so an implementation built on it would
+        pass a same-process comparison and still change the bed on every restart."""
+        first = self._bed(path="a.mp4", speech=[(0, 40)])
+        second = self._bed(path="a.mp4", speech=[(0, 40)])
+        assert (first.prompt, first.seed) == (second.prompt, second.seed)
+        assert first.seed == 50113, "the seed must be a stable digest, not a salted hash"
+
+    def test_the_bed_follows_how_busy_the_picture_is(self):
+        still = analysis(curve=flat_curve(48, 0.0002, []))
+        busy = analysis(
+            curve=flat_curve(48, 0.03, []),
+            shots=[{"index": i, "start": i * 4.0, "end": i * 4.0 + 4.0, "motion": 0.03,
+                    "peak_motion": 0.05, "peak_at": i * 4.0 + 1} for i in range(12)])
+        assert design.bed_pace(still, 48.0) == "slow"
+        assert design.bed_pace(busy, 48.0) == "fast"
+        assert self._bed(curve=flat_curve(48, 0.0002, [])).prompt != \
+            design.scaffold(busy).music[0].prompt
+
+    def test_a_narrated_clip_gets_a_bed_written_to_sit_under_the_voice(self):
+        """A bed with a lead melody fights a voiceover instead of supporting it."""
+        narrated = self._bed(speech=[(0.0, 44.0)])
+        assert "no lead melody" in narrated.prompt
+        assert "no vocals" in narrated.prompt
+
+    def test_every_bed_keeps_the_voice_room_it_was_written_for(self):
+        for bed in design.MUSIC_BEDS:
+            assert "no vocals" in bed.prompt, f"{bed.mood} could come back with singing"
+            # A darker, more mono bed competes with centre-panned speech instead of
+            # sitting under it.
+            assert "wide stereo image" in bed.prompt and "airy top end" in bed.prompt
+            if bed.narration:
+                assert "no lead melody" in bed.prompt and "steady dynamics" in bed.prompt
+
+    def test_the_library_covers_every_combination_it_is_asked_for(self):
+        pairs = {(b.narration, b.pace) for b in design.MUSIC_BEDS}
+        for narration in (True, False):
+            for pace in ("slow", "medium", "fast"):
+                assert (narration, pace) in pairs, f"nothing for {narration}/{pace}"
+                pool = [b for b in design.MUSIC_BEDS
+                        if b.narration is narration and b.pace == pace]
+                assert len(pool) > 1, "one candidate is how this became one bed for everyone"
 
 
 class TestHardwareAdaptation:

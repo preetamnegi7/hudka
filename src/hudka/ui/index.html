@@ -838,6 +838,7 @@ function paintProject() {
   paintTimeline();
   paintDownloads();
   paintAction();
+  paintAuditionButton();
 
   paintReport();
 
@@ -1136,7 +1137,7 @@ async function doRender() {
 
 /* ------------------------------------------------------------ polling */
 
-function startPoll(jobId) {
+function startPoll(jobId, onDone) {
   stopPoll();
   $('#jobBox').classList.remove('hidden');
   $('#btnAct').disabled = true;
@@ -1146,6 +1147,7 @@ function startPoll(jobId) {
     catch { stopPoll(); return; }
 
     $('#jobLabel').textContent = { analyze: 'Analysing', render: 'Rendering',
+                                    generate: 'Generating sounds',
                                     variations: 'Making variations' }[job.kind] || job.kind;
     $('#jobTime').textContent = `${job.elapsed}s`;
     const log = $('#jobLog');
@@ -1160,7 +1162,11 @@ function startPoll(jobId) {
         $('#previewMode').checked = false;
         viewPreview = !!r.preview;
       }
-      if (r.preview) {
+      if (job.kind === 'generate') {
+        const made = r.generated || 0, kept = r.cached || 0;
+        say(`${made} generated, ${kept} reused - ready to hear`,
+            (r.warnings || []).length ? 'danger' : 'muted');
+      } else if (r.preview) {
         say('preview rendered — placeholder tones, not real audio', 'danger');
         $('#projBanner').innerHTML = `<div class="banner warn">
           <strong>This is a preview.</strong> What you hear is metronome-style placeholder
@@ -1180,6 +1186,7 @@ function startPoll(jobId) {
       $('#player').dataset.src = '';
       await refresh();
       syncPreviewUi();
+      if (onDone) onDone(job);
     } else if (job.status === 'error') {
       stopPoll();
       $('#jobSpin').classList.add('hidden');
@@ -1187,6 +1194,8 @@ function startPoll(jobId) {
         `<div class="banner err"><strong>${job.kind} failed</strong><br>${escapeHtml(job.error)}</div>`;
       say('failed', 'danger');
       $('#btnAct').disabled = false;
+      paintAuditionButton();
+      if (onDone) onDone(job);          // or "Generate & listen" waits for ever
     }
   }, 700);
 }
@@ -1915,6 +1924,47 @@ function AUDITION_GAPS() {
    answer by luck, so it is made the right answer by construction. */
 const sheetVersion = () => (proj.cues && proj.cues.version) || 1;
 
+/* Cues whose audio does not exist yet. The live mix never substitutes anything for a
+   missing stem - it stays silent - so this is what has to be generated before there is
+   anything to hear. */
+function cuesNeedingStems() {
+  if (!proj || !proj.cues) return [];
+  const have = new Set(proj.stems || []);
+  return ['music', 'ambience', 'sfx']
+    .flatMap(k => proj.cues[k] || [])
+    .filter(c => !have.has(c.id))
+    .map(c => c.id);
+}
+
+/* One button, two jobs, because from where the user is standing it is one intent: I want
+   to hear this. If the sounds do not exist it offers to make them; if they do it just
+   plays them. */
+function paintAuditionButton() {
+  const btn = $('#btnAudition');
+  if (!btn || !proj) return;
+  const total = proj.cues
+    ? ['music', 'ambience', 'sfx'].reduce((n, k) => n + (proj.cues[k] || []).length, 0) : 0;
+  btn.disabled = !total || proj.busy;
+  if (AUD.on) {
+    btn.textContent = 'Live mix';
+    btn.title = 'Stop the live mix and go back to the finished render';
+    return;
+  }
+  const missing = cuesNeedingStems();
+  btn.textContent = missing.length ? 'Generate & listen' : 'Live mix';
+  btn.title = missing.length
+    ? `${missing.length} cue${missing.length === 1 ? ' has' : 's have'} no sound yet. `
+      + 'Generate them and listen - no mix, no mastering, no video. '
+      + 'After that every change to level, pan, mute or solo is heard instantly.'
+    : 'Live mix - hear M, S, gain and pan now instead of on the next render';
+}
+
+/* Submit a job and resolve when it finishes, reusing the job box and its log. */
+function runJob(url, body) {
+  return api(url, { method: 'POST', body: JSON.stringify(body) })
+    .then(job => new Promise(resolve => startPoll(job.id, resolve)));
+}
+
 $('#btnAudition').onclick = async function () {
   // The live mix and a preview cannot both be true: the live mix plays the REAL stem
   // tree, so auditioning under the preview banner would put "placeholder tones, not real
@@ -1924,7 +1974,19 @@ $('#btnAudition').onclick = async function () {
     this.blur(); return;
   }
   if (!AUD.on) {
-    if (!(await armAudition())) {
+    /* ensureCtx FIRST, synchronously inside the click: the autoplay policy only starts an
+       AudioContext from a user gesture, and generation below can take half a minute -
+       long enough that the gesture is gone by the time we would otherwise ask. */
+    let ready = await ensureCtx();
+    if (cuesNeedingStems().length) {
+      try {
+        await runJob(`/api/project/${proj.name}/generate`,
+                     { preview: false, opted_in: [], allow_noncommercial: false });
+      } catch (err) { say(err.message, 'danger'); this.blur(); return; }
+      if (cuesNeedingStems().length) { paintAuditionButton(); this.blur(); return; }
+      ready = await ensureCtx();
+    }
+    if (!ready || !(await armAudition())) {
       say('your browser is holding audio back - click the page and try again', 'danger');
       this.blur(); return;
     }
